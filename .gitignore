@@ -3,7 +3,7 @@ venv/
 env/
 ENV/
 .env/
-
+checkpoints
 # Кэш Python
 __pycache__/
 *.pyc

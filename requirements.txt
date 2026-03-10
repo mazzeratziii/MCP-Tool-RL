@@ -1,10 +1,23 @@
+# Базовые пакеты
 numpy==1.24.3
-pandas==2.0.3
-torch==2.1.0
-torchvision==0.16.0
-torchaudio==2.1.0
-datasets==2.14.0
-transformers==4.35.0
-accelerate==0.24.0
-sentence-transformers==2.2.0
+pandas==1.5.3
+
+# PyTorch с CUDA 12.1
+torch==2.3.0
+torchvision==0.18.0
+torchaudio==2.3.0
+--index-url https://download.pytorch.org/whl/cu124
+
+transformers==4.45.2
+sentence-transformers==2.2.2
+accelerate==0.30.0
+datasets==2.18.0
 toolbrain==0.1.0
+
+# Утилиты
+tqdm==4.66.0
+requests==2.31.0
+pyyaml==6.0.1
+python-dateutil==2.9.0.post0
+pytz==2026.1.post1
+six==1.17.0

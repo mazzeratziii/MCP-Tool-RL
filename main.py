@@ -1,13 +1,13 @@
+# main.py
 import os
-os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 import sys
 import platform
 import ctypes
+import argparse
 
 # Решение для Windows: принудительно загружаем c10.dll до остальных импортов
 if platform.system() == "Windows":
     try:
-        # Сначала находим путь к torch, если он установлен
         import importlib.util
 
         torch_spec = importlib.util.find_spec("torch")
@@ -15,16 +15,10 @@ if platform.system() == "Windows":
             torch_dir = os.path.dirname(torch_spec.origin)
             dll_path = os.path.join(torch_dir, "lib", "c10.dll")
             if os.path.exists(dll_path):
-                # Загружаем DLL с указанием полного пути
                 ctypes.CDLL(os.path.normpath(dll_path))
-                print("c10.dll успешно предварительно загружен")
-            else:
-                print(f"c10.dll не найден по пути: {dll_path}")
+                print("✅ c10.dll успешно предварительно загружен")
     except Exception as e:
-        print(f"Предзагрузка c10.dll не удалась: {e}")
-
-# Теперь импортируем остальные модули
-import argparse
+        print(f"⚠️ Предзагрузка c10.dll не удалась: {e}")
 
 # Добавляем путь к src в системный путь
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -42,12 +36,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Загружаем конфигурацию
     config = Config()
     config.rl.num_epochs = args.epochs
     config.model_name = args.model
 
-    # Создаем тренера
     trainer = NetMCPTrainer(config)
 
     if args.mode == "train":
@@ -68,7 +60,6 @@ def run_interactive(trainer):
         if query.lower() in ['quit', 'exit', 'q']:
             break
 
-        # Создаем структуру данных как в ToolBench
         query_data = {
             'query': query,
             'domain': 'user_query',
@@ -81,6 +72,10 @@ def run_interactive(trainer):
         for step in range(trainer.config.rl.max_steps):
             context = trainer._format_context(state)
             inputs = trainer.tokenizer(context, return_tensors="pt")
+
+            # ВАЖНО: перемещаем входные тензоры на то же устройство, что и модель
+            inputs = {k: v.to(trainer.device) for k, v in inputs.items()}
+
             outputs = trainer.model.generate(**inputs, max_new_tokens=50)
             response = trainer.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
@@ -92,7 +87,7 @@ def run_interactive(trainer):
                 print(f"    Награда: {reward:.2f}")
 
                 if done:
-                    print(f"  Результат: {'Успех' if info.get('success') else 'Неудача'}")
+                    print(f"  Результат: {'✅ Успех' if info.get('success') else '❌ Неудача'}")
                     break
 
                 state = next_state

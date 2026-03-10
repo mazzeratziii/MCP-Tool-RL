@@ -30,9 +30,9 @@ class ToolBenchConfig:
 class RLConfig:
     """Конфигурация RL"""
     algorithm: str = "grpo"
-    learning_rate: float = 1e-5
-    batch_size: int = 4
-    num_epochs: int = 3
+    learning_rate: float = 2e-5  # Немного увеличили
+    batch_size: int = 2  # Уменьшили с 4 до 2
+    num_epochs: int = 10
     max_steps: int = 3
     kl_coef: float = 0.1
     temperature: float = 0.7
