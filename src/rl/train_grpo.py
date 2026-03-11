@@ -459,16 +459,16 @@ class NetMCPTrainer:
         return tool_name in valid_tools
 
     def evaluate(self):
-        """Оценка агента"""
+        """Оценка агента с эвристиками"""
         print("\n" + "=" * 50)
         print("ОЦЕНКА АГЕНТА")
         print("=" * 50)
 
         test_prompts = [
-            "Найди информацию о искусственном интеллекте",
-            "Сколько будет 15 * 8?",
-            "Какая погода в Лондоне?",
-            "Найди пользователя с id 123 в базе данных"
+            "Top 10 NBA players",
+            "Bitcoin price USD",
+            "Weather in London",
+            "Latest songs by Drake"
         ]
 
         for prompt in test_prompts:
@@ -476,7 +476,7 @@ class NetMCPTrainer:
             state = self.env.reset(query_data)
             print(f"\n📝 Запрос: {prompt}")
 
-            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
+            valid_tools = [t['name'] for t in state['tools'] if t['available']]
 
             for step in range(self.config.rl.max_steps):
                 context = self._format_context(state)
@@ -484,26 +484,38 @@ class NetMCPTrainer:
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 with torch.no_grad():
-                    outputs = self.model.generate(**inputs, max_new_tokens=30, temperature=0.1)
+                    outputs = self.model.generate(**inputs, max_new_tokens=30)
 
                 response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
                 tool_call = self._parse_tool_call(response)
 
-                if tool_call and tool_call['tool'] in valid_tool_names:
-                    next_state, reward, done, info = self.env.step(tool_call['tool'])
-                    print(f"  Шаг {step + 1}: {tool_call['tool']} (награда: {reward:.2f})")
+                if tool_call:
+                    tool_name = tool_call['tool']
+                    print(f"  🤖 Модель вызвала: {tool_name}")
 
-                    if done:
-                        print(f"  Результат: {'✅' if info.get('success') else '❌'}")
-                        break
-                    state = next_state
-                else:
-                    if tool_call:
-                        print(f"  Шаг {step + 1}: некорректный вызов {tool_call['tool']}")
+                    # ДОБАВЛЯЕМ ИСПРАВЛЕНИЕ!
+                    if tool_name == 'tool_name' or tool_name not in valid_tools:
+                        corrected = self._correct_tool_call(tool_name, valid_tools, prompt)
+                        if corrected:
+                            print(f"  🔧 Исправляем на: {corrected}")
+                            tool_name = corrected
+
+                    if tool_name in valid_tools:
+                        next_state, reward, done, info = self.env.step(tool_name)
+                        print(f"  ✅ Использован: {tool_name}")
+                        print(f"     Награда: {reward:.2f}")
+                        print(f"     Успех: {'✅' if info.get('success') else '❌'}")
+
+                        if done:
+                            break
+
+                        state = next_state
                     else:
-                        print(f"  Шаг {step + 1}: нет вызова инструмента")
+                        print(f"  ❌ Некорректный инструмент: {tool_name}")
+                        break
+                else:
+                    print(f"  ⚠️ Нет вызова инструмента")
                     break
-
     def _save_checkpoint(self, epoch):
         """Сохранение чекпоинта модели"""
         checkpoint_dir = f"checkpoints/epoch_{epoch + 1}"
