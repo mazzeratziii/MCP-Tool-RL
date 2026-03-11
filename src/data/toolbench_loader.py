@@ -1,272 +1,289 @@
+# src/data/toolbench_loader.py
+from datasets import load_dataset
 import json
 import random
+import ast
 from typing import List, Dict, Any, Optional
-import os
-from datasets import load_dataset
+from tqdm import tqdm
 
 
 class ToolBenchLoader:
-    """Загрузчик и обработчик данных из ToolBench с исправленной обработкой"""
+    """Загрузчик данных из ToolBench"""
 
     def __init__(self, split="train", sample_size=None):
-        """
-        Загрузка датасета ToolBench
+        print(f"\n{'=' * 60}")
+        print(f"ЗАГРУЗКА TOOLBENCH {split.upper()} SPLIT")
+        print(f"{'=' * 60}")
 
-        Args:
-            split: "train" или "test"
-            sample_size: количество примеров для загрузки (None = все)
-        """
-        print(f"Загрузка ToolBench {split} split...")
+        # Загружаем датасет
+        print("📦 Загрузка датасета с HuggingFace...")
+        self.dataset = load_dataset("Maurus/ToolBench", split=split)
 
-        try:
-            # Пытаемся загрузить через datasets с указанием trust_remote_code
-            self.dataset = load_dataset(
-                "Maurus/ToolBench",
-                split=split,
-                trust_remote_code=True
-            )
+        print(f"✅ Датасет загружен!")
+        print(f"   - Размер: {len(self.dataset)} примеров")
+        print(f"   - Колонки: {self.dataset.column_names}")
 
-            # Преобразуем в список словарей
-            self.data = []
-            for item in self.dataset:
+        # Ограничиваем размер если нужно
+        if sample_size and sample_size < len(self.dataset):
+            self.dataset = self.dataset.select(range(sample_size))
+            print(f"   - Используем {sample_size} примеров")
+
+        # Обрабатываем данные
+        print("\n🔄 Обработка данных...")
+        self.data = self._process_dataset()
+
+        # Извлекаем инструменты
+        print("\n🔧 Извлечение инструментов...")
+        self.tools = self._extract_tools()
+
+        print(f"\n{'=' * 60}")
+        print(f"ИТОГИ ЗАГРУЗКИ:")
+        print(f"   - Примеров: {len(self.data)}")
+        print(f"   - Инструментов: {len(self.tools)}")
+
+        if self.tools:
+            print(f"\n📋 ПЕРВЫЕ 5 ИНСТРУМЕНТОВ:")
+            for i, tool in enumerate(self.tools[:5]):
+                print(f"   {i + 1}. {tool['name']}")
+                print(f"      Категория: {tool['category']}")
+                print(f"      Описание: {tool['description'][:100]}...")
+        else:
+            print("\n⚠️ ИНСТРУМЕНТЫ НЕ НАЙДЕНЫ!")
+            print("   Проверьте структуру датасета...")
+            self._debug_dataset_structure()
+
+    def _safe_parse_json(self, data: Any) -> Any:
+        """Безопасный парсинг JSON/строки в Python объект"""
+        if isinstance(data, (dict, list)):
+            return data
+
+        if isinstance(data, str):
+            # Пробуем разные методы парсинга
+            try:
+                return json.loads(data)
+            except:
                 try:
-                    processed_item = self._process_item(item)
-                    if processed_item:
-                        self.data.append(processed_item)
-                except Exception as e:
-                    print(f"Пропускаем элемент: {e}")
+                    return ast.literal_eval(data)
+                except:
+                    # Если это строка с экранированными кавычками
+                    try:
+                        # Убираем экранирование
+                        cleaned = data.replace('\\"', '"').replace("\\'", "'")
+                        return json.loads(cleaned)
+                    except:
+                        pass
+        return data
+
+    def _process_dataset(self) -> List[Dict]:
+        """Обработка датасета с прогресс-баром"""
+        processed = []
+
+        for idx, item in enumerate(tqdm(self.dataset, desc="Обработка примеров")):
+            try:
+                # Получаем запрос
+                query = item.get('query', '')
+                if not query:
                     continue
 
-        except Exception as e:
-            print(f"Ошибка загрузки через datasets: {e}")
-            print("Создаем тестовые данные...")
-            # Создаем тестовые данные если загрузка не удалась
-            self.data = self._create_test_data()
+                # Получаем API лист и парсим
+                api_list = item.get('api_list', [])
+                api_list = self._safe_parse_json(api_list)
 
-        if sample_size and sample_size < len(self.data):
-            self.data = self.data[:sample_size]
-
-        print(f"Загружено {len(self.data)} примеров")
-
-        # Извлекаем все уникальные инструменты
-        self.tools = self._extract_all_tools()
-        print(f"Найдено {len(self.tools)} уникальных инструментов")
-
-    def _process_item(self, item: Dict) -> Optional[Dict]:
-        """Безопасная обработка элемента датасета"""
-        try:
-            # Получаем api_list
-            api_list = item.get('api_list', [])
-            if isinstance(api_list, str):
-                try:
-                    api_list = json.loads(api_list)
-                except:
+                # Убеждаемся, что это список
+                if not isinstance(api_list, list):
                     api_list = []
 
-            # Получаем query
-            query = item.get('query', '')
-            if isinstance(query, bytes):
-                query = query.decode('utf-8')
-            elif not isinstance(query, str):
-                query = str(query)
+                # Получаем домен
+                domain = item.get('domain', '')
+                if isinstance(domain, bytes):
+                    domain = domain.decode('utf-8')
 
-            # Получаем domain
-            domain = item.get('domain', '')
-            if isinstance(domain, bytes):
-                domain = domain.decode('utf-8')
-            elif not isinstance(domain, str):
-                domain = str(domain)
+                # Получаем ответ и парсим
+                answer = item.get('answer', {})
+                answer = self._safe_parse_json(answer)
+                if not isinstance(answer, dict):
+                    answer = {}
 
-            return {
-                'api_list': api_list,
-                'query': query,
-                'query_id': str(item.get('query_id', '')),
-                'domain': domain,
-            }
-        except Exception as e:
-            print(f"Ошибка обработки: {e}")
-            return None
+                # Получаем embedding если есть
+                embedding = item.get('embedding', [])
+                embedding = self._safe_parse_json(embedding)
+                if not isinstance(embedding, list):
+                    embedding = []
 
-    def _create_test_data(self) -> List[Dict]:
-        """Создание тестовых данных если загрузка не удалась"""
-        test_data = []
+                processed.append({
+                    'query': query,
+                    'api_list': api_list,
+                    'domain': domain,
+                    'answer': answer,
+                    'embedding': embedding,
+                    'query_id': str(item.get('query_id', idx))
+                })
 
-        # Тестовые запросы
-        test_queries = [
-            "Найди информацию о последних новостях в мире технологий",
-            "Посчитай 234 * 567",
-            "Какая погода в Москве сегодня?",
-            "Найди в базе данных информацию о пользователе с id 12345",
-            "Сколько будет 15% от 8500 рублей?",
-            "Переведи текст 'Hello world' на русский язык",
-            "Найди рецепт пиццы",
-            "Какое сегодня число?",
-            "Напиши код на Python для сортировки списка",
-            "Сколько времени в Токио?"
-        ]
+            except Exception as e:
+                print(f"   ⚠️ Ошибка в примере {idx}: {e}")
+                continue
 
-        # Тестовые инструменты
-        test_tools = [
-            {
-                'tool_name': 'WebSearch',
-                'api_name': 'search',
-                'api_description': 'Поиск информации в интернете',
-                'category_name': 'Search',
-                'required_parameters': [{'name': 'query', 'type': 'string'}],
-                'optional_parameters': [],
-                'method': 'GET'
-            },
-            {
-                'tool_name': 'Calculator',
-                'api_name': 'calculate',
-                'api_description': 'Выполнение математических вычислений',
-                'category_name': 'Math',
-                'required_parameters': [{'name': 'expression', 'type': 'string'}],
-                'optional_parameters': [],
-                'method': 'POST'
-            },
-            {
-                'tool_name': 'Weather',
-                'api_name': 'get_weather',
-                'api_description': 'Получение информации о погоде',
-                'category_name': 'Weather',
-                'required_parameters': [{'name': 'city', 'type': 'string'}],
-                'optional_parameters': [],
-                'method': 'GET'
-            },
-            {
-                'tool_name': 'Database',
-                'api_name': 'query',
-                'api_description': 'Запрос к базе данных',
-                'category_name': 'Data',
-                'required_parameters': [{'name': 'sql', 'type': 'string'}],
-                'optional_parameters': [],
-                'method': 'POST'
-            },
-            {
-                'tool_name': 'Translation',
-                'api_name': 'translate',
-                'api_description': 'Перевод текста',
-                'category_name': 'Language',
-                'required_parameters': [
-                    {'name': 'text', 'type': 'string'},
-                    {'name': 'target_lang', 'type': 'string'}
-                ],
-                'optional_parameters': [],
-                'method': 'POST'
-            }
-        ]
+        return processed
 
-        # Создаем тестовые элементы
-        for i, query in enumerate(test_queries):
-            # Выбираем случайный инструмент
-            tool = random.choice(test_tools)
-            domain = tool['category_name']
-
-            item = {
-                'api_list': [tool],
-                'query': query,
-                'query_id': str(i + 1000),
-                'domain': domain
-            }
-            test_data.append(item)
-
-        return test_data
-
-    def _extract_all_tools(self) -> List[Dict]:
-        """Извлечение всех уникальных инструментов из датасета"""
+    def _extract_tools(self) -> List[Dict]:
+        """Извлечение всех уникальных инструментов"""
         tools_dict = {}
 
-        for item in self.data:
-            api_list = item.get('api_list', [])
-            if not isinstance(api_list, list):
+        print("\n🔍 Ищем инструменты в датасете...")
+
+        for idx, item in enumerate(tqdm(self.data, desc="Извлечение инструментов")):
+            api_list = item['api_list']
+
+            if not api_list or not isinstance(api_list, list):
                 continue
 
             for api in api_list:
                 if not isinstance(api, dict):
                     continue
 
-                tool_name = api.get('tool_name', 'unknown')
-                api_name = api.get('api_name', 'unknown')
-                tool_key = f"{tool_name}_{api_name}"
+                # Получаем имя инструмента
+                tool_name = api.get('tool_name', '')
+                api_name = api.get('api_name', '')
+
+                if not tool_name or not api_name:
+                    continue
+
+                tool_key = f"{tool_name}.{api_name}"
 
                 if tool_key not in tools_dict:
-                    # Обрабатываем параметры
-                    required_params = api.get('required_parameters', [])
-                    if isinstance(required_params, str):
-                        try:
-                            required_params = json.loads(required_params)
-                        except:
-                            required_params = []
+                    # Получаем описание
+                    description = api.get('api_description', '')
+                    if not description:
+                        description = api.get('description', '')
 
-                    optional_params = api.get('optional_parameters', [])
-                    if isinstance(optional_params, str):
-                        try:
-                            optional_params = json.loads(optional_params)
-                        except:
-                            optional_params = []
+                    # Получаем категорию
+                    category = api.get('category_name', 'Unknown')
+
+                    # Получаем параметры
+                    required = api.get('required_parameters', [])
+                    required = self._safe_parse_json(required)
+                    if not isinstance(required, list):
+                        required = []
+
+                    optional = api.get('optional_parameters', [])
+                    optional = self._safe_parse_json(optional)
+                    if not isinstance(optional, list):
+                        optional = []
 
                     tools_dict[tool_key] = {
-                        'name': f"{tool_name}.{api_name}",
+                        'name': tool_key,
                         'tool_name': tool_name,
                         'api_name': api_name,
-                        'description': str(api.get('api_description', '')),
-                        'category': str(api.get('category_name', 'Unknown')),
-                        'required_parameters': required_params,
-                        'optional_parameters': optional_params,
-                        'method': str(api.get('method', 'GET')),
-                        'base_latency': random.uniform(0.1, 0.8),
-                        'failure_rate': random.uniform(0.01, 0.15)
+                        'description': description,
+                        'category': category,
+                        'required_parameters': required,
+                        'optional_parameters': optional,
+                        'method': api.get('method', 'GET'),
+                        'base_latency': random.uniform(0.1, 0.5),
+                        'failure_rate': random.uniform(0.01, 0.1)
                     }
 
-        return list(tools_dict.values())
+        tools = list(tools_dict.values())
+        print(f"\n📊 Найдено {len(tools)} уникальных инструментов")
+        return tools
+
+    def _debug_dataset_structure(self):
+        """Отладка структуры датасета"""
+        print("\n🔍 ОТЛАДКА СТРУКТУРЫ ДАТАСЕТА:")
+
+        # Смотрим первый пример
+        if len(self.dataset) > 0:
+            first = self.dataset[0]
+            print(f"\nПервый пример (ключи): {list(first.keys())}")
+
+            # Проверяем api_list
+            api_list = first.get('api_list', [])
+            print(f"Тип api_list: {type(api_list)}")
+
+            if isinstance(api_list, str):
+                print(f"api_list (строка, первые 200 символов): {api_list[:200]}")
+                try:
+                    # Пробуем разные методы парсинга
+                    print("\nПопытки парсинга:")
+
+                    # Метод 1: json.loads
+                    try:
+                        parsed = json.loads(api_list)
+                        print(
+                            f"✓ json.loads успешен: тип {type(parsed)}, длина {len(parsed) if isinstance(parsed, list) else 'не список'}")
+                    except Exception as e:
+                        print(f"✗ json.loads: {e}")
+
+                    # Метод 2: ast.literal_eval
+                    try:
+                        parsed = ast.literal_eval(api_list)
+                        print(
+                            f"✓ ast.literal_eval успешен: тип {type(parsed)}, длина {len(parsed) if isinstance(parsed, list) else 'не список'}")
+                    except Exception as e:
+                        print(f"✗ ast.literal_eval: {e}")
+
+                    # Метод 3: с очисткой экранирования
+                    try:
+                        cleaned = api_list.replace('\\"', '"').replace("\\'", "'")
+                        parsed = json.loads(cleaned)
+                        print(f"✓ json.loads с очисткой успешен: тип {type(parsed)}")
+                    except Exception as e:
+                        print(f"✗ json.loads с очисткой: {e}")
+
+                except:
+                    print("Не удалось распарсить JSON")
+
+            # Проверяем answer
+            answer = first.get('answer', {})
+            print(f"\nТип answer: {type(answer)}")
+            if isinstance(answer, str):
+                print(f"answer (строка, первые 200 символов): {answer[:200]}")
 
     def get_training_prompts(self) -> List[Dict]:
         """Получение промптов для обучения"""
         prompts = []
 
         for item in self.data:
-            query = item.get('query', '')
-            if not query:
-                continue
-
-            # Инструменты, которые подходят для этого запроса
             relevant_tools = []
-            api_list = item.get('api_list', [])
+            target_tool = None
 
-            if isinstance(api_list, list):
-                for api in api_list:
-                    if not isinstance(api, dict):
-                        continue
+            # Если есть ответ, извлекаем целевой инструмент
+            answer = item.get('answer', {})
+            if isinstance(answer, dict):
+                tool_name = answer.get('tool_name')
+                api_name = answer.get('api_name')
+                if tool_name and api_name:
+                    target_tool = f"{tool_name}.{api_name}"
 
-                    tool_name = api.get('tool_name', 'unknown')
-                    api_name = api.get('api_name', 'unknown')
-
-                    # Находим полную информацию об инструменте
-                    for tool in self.tools:
-                        if tool['name'] == f"{tool_name}.{api_name}":
-                            relevant_tools.append(tool)
-                            break
+            # Ищем инструменты из api_list в нашем словаре
+            for api in item['api_list']:
+                if isinstance(api, dict):
+                    t_name = api.get('tool_name')
+                    a_name = api.get('api_name')
+                    if t_name and a_name:
+                        tool_key = f"{t_name}.{a_name}"
+                        for tool in self.tools:
+                            if tool['name'] == tool_key:
+                                relevant_tools.append(tool)
+                                break
 
             prompts.append({
-                'query': query,
-                'query_id': item.get('query_id', ''),
-                'domain': item.get('domain', ''),
-                'relevant_tools': relevant_tools
+                'query': item['query'],
+                'query_id': item['query_id'],
+                'domain': item['domain'],
+                'relevant_tools': relevant_tools,
+                'target_tool': target_tool
             })
 
         return prompts
 
-    def get_tools_for_domain(self, domain: str) -> List[Dict]:
-        """Получение инструментов для конкретного домена"""
-        domain_tools = []
-        for tool in self.tools:
-            if domain.lower() in tool['category'].lower():
-                domain_tools.append(tool)
-        return domain_tools
-
     def sample_tools(self, n: int = 10) -> List[Dict]:
         """Случайная выборка инструментов"""
         if not self.tools:
+            print("⚠️ Нет инструментов для выборки!")
             return []
-        return random.sample(self.tools, min(n, len(self.tools)))
+
+        n = min(n, len(self.tools))
+        sampled = random.sample(self.tools, n)
+        print(f"   Выбрано {n} инструментов для обучения")
+        return sampled

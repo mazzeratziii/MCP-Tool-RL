@@ -3,6 +3,8 @@ import sys
 import os
 import traceback
 
+import torch
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 print("=" * 60)

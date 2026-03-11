@@ -188,8 +188,11 @@ class NetMCPTrainer:
         print("\n" + "=" * 50)
         print("✅ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
         print("=" * 50)
-        print(f"Финальная потеря: {loss_history[-1]:.4f}")
-        print(f"Финальная награда: {reward_history[-1]:.2f}")
+        if loss_history:
+            print(f"Финальная потеря: {loss_history[-1]:.4f}")
+            print(f"Финальная награда: {reward_history[-1]:.2f}")
+        else:
+            print("⚠️ Обучение не произошло (нет данных)")
 
         # Визуализация результатов
         self._plot_training_history(loss_history, reward_history)
@@ -208,15 +211,27 @@ class NetMCPTrainer:
         for prompt_idx, prompt_data in enumerate(batch_prompts):
             print(f"   Промпт {prompt_idx + 1}: {prompt_data['query'][:50]}...")
 
+            # СБРАСЫВАЕМ СРЕДУ ДЛЯ КАЖДОГО ПРОМПТА
             state = self.env.reset(prompt_data)
+
+            # Получаем список реальных инструментов для этого состояния
+            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
+
+            # Если нет валидных инструментов - пропускаем
+            if not valid_tool_names:
+                print(f"     ⚠️ Нет доступных инструментов для этого запроса")
+                trajectories.append({
+                    'prompt': prompt_data['query'],
+                    'steps': [],
+                    'success': False
+                })
+                continue
+
             trajectory = {
                 'prompt': prompt_data['query'],
                 'steps': [],
                 'success': False
             }
-
-            # Получаем список реальных инструментов для этого состояния
-            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
 
             for step in range(self.config.rl.max_steps):
                 # Используем обычный промпт
@@ -229,7 +244,7 @@ class NetMCPTrainer:
                     outputs = self.model.generate(
                         **inputs,
                         max_new_tokens=30,
-                        temperature=0.3,  # Уменьшаем температуру для более детерминированных ответов
+                        temperature=0.3,
                         do_sample=True,
                         pad_token_id=self.tokenizer.eos_token_id
                     )
@@ -262,7 +277,7 @@ class NetMCPTrainer:
                         print(f"     Некорректный вызов инструмента: {tool_name}")
                         print(f"     Допустимые инструменты: {valid_tool_names}")
 
-                        # Пытаемся исправить невалидный вызов эвристически
+                        # Пытаемся исправить
                         corrected_tool = self._correct_tool_call(tool_name, valid_tool_names, prompt_data['query'])
 
                         if corrected_tool:
@@ -272,7 +287,7 @@ class NetMCPTrainer:
                             trajectory['steps'].append({
                                 'state': state,
                                 'action': corrected_tool,
-                                'reward': reward * 0.5,  # Уменьшенная награда за исправление
+                                'reward': reward * 0.5,
                                 'latency': info.get('latency', 0),
                                 'success': info.get('success', False)
                             })
@@ -291,38 +306,6 @@ class NetMCPTrainer:
                                 'latency': 0,
                                 'success': False
                             })
-
-                            # Пробуем еще раз с жестким промптом
-                            if step == 0:
-                                print("     Пробуем с жестким промптом...")
-                                from src.prompts import get_strict_prompt
-                                strict_context = get_strict_prompt(prompt_data['query'], state['tools'])
-                                inputs = self.tokenizer(strict_context, return_tensors="pt", truncation=True,
-                                                        max_length=512)
-                                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-                                with torch.no_grad():
-                                    outputs = self.model.generate(**inputs, max_new_tokens=30, temperature=0.1)
-
-                                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                                tool_call = self._parse_tool_call(response)
-
-                                if tool_call and tool_call['tool'] in valid_tool_names:
-                                    print(f"     Повторная попытка: вызван {tool_call['tool']}")
-                                    next_state, reward, done, info = self.env.step(tool_call['tool'])
-
-                                    trajectory['steps'].append({
-                                        'state': state,
-                                        'action': tool_call['tool'],
-                                        'reward': reward,
-                                        'latency': info.get('latency', 0),
-                                        'success': info.get('success', False)
-                                    })
-
-                                    state = next_state
-                                    if done:
-                                        trajectory['success'] = info.get('success', False)
-                                    break
                             break
                 else:
                     print(f"     Шаг {step + 1}: нет вызова инструмента")
@@ -333,31 +316,67 @@ class NetMCPTrainer:
         return trajectories
 
     def _correct_tool_call(self, wrong_tool, valid_tools, query):
-        """Исправляет невалидный вызов инструмента"""
+        """Улучшенные эвристики с приоритетом для математических запросов"""
+        if not valid_tools:
+            return None
 
-        # Специальная обработка для tool_name
-        if wrong_tool == 'tool_name' or wrong_tool.startswith('tool_'):
-            query_lower = query.lower()
+        query_lower = query.lower()
+        print(f"     🔍 Анализ запроса: '{query_lower}'")
 
-            # Эвристики на основе ключевых слов
-            if any(word in query_lower for word in ['+', '-', '*', '/', 'сколько', 'посчитай', 'calculate', 'math']):
-                for tool in valid_tools:
-                    if 'calc' in tool.lower() or 'math' in tool.lower():
-                        return tool
-            elif any(word in query_lower for word in ['погода', 'weather', 'температура', 'дождь']):
-                for tool in valid_tools:
-                    if 'weather' in tool.lower():
-                        return tool
-            elif any(word in query_lower for word in ['найди', 'поиск', 'search', 'информация']):
-                for tool in valid_tools:
-                    if 'search' in tool.lower() or 'web' in tool.lower():
-                        return tool
-            elif any(word in query_lower for word in ['база', 'данные', 'database', 'пользователь']):
-                for tool in valid_tools:
-                    if 'database' in tool.lower() or 'db' in tool.lower():
-                        return tool
+        # Приоритетные категории инструментов
+        priority_keywords = {
+            'math': ['+', '-', '*', '/', 'сколько', 'посчитай', 'calculate', 'math', '2 + 2', '2+2', 'plus', 'minus',
+                     'times', 'divided'],
+            'calculator': ['calc', 'calculator', 'compute', 'arithmetic'],
+            'search': ['search', 'find', 'lookup', 'информация', 'найди', 'поиск'],
+            'weather': ['weather', 'погода', 'temperature', 'temp'],
+            'database': ['database', 'db', 'sql', 'query', 'data'],
+            'translate': ['translate', 'переведи', 'translation']
+        }
 
-        # Если ничего не подошло, возвращаем первый доступный инструмент
+        # Сначала ищем инструменты с "calc" или "math" в названии для математических запросов
+        if any(word in query_lower for word in priority_keywords['math']):
+            print(f"     🧮 Обнаружен математический запрос")
+            for tool in valid_tools:
+                tool_lower = tool.lower()
+                if any(x in tool_lower for x in ['calc', 'math', 'compute', 'arithmetic']):
+                    print(f"     ✅ Найден математический инструмент: {tool}")
+                    return tool
+
+        # Если не нашли, используем систему оценки
+        best_match = None
+        best_score = 0
+
+        for tool in valid_tools:
+            score = 0
+            tool_lower = tool.lower()
+
+            # Проверяем каждую категорию
+            for category, keywords in priority_keywords.items():
+                if any(word in query_lower for word in keywords):
+                    if any(x in tool_lower for x in keywords[:3]):  # Проверяем первые 3 ключевых слова
+                        score += 5
+                    elif category in tool_lower:
+                        score += 3
+
+            # Проверяем отдельные слова из запроса
+            query_words = set(query_lower.split())
+            tool_words = set(tool_lower.replace('.', ' ').replace('/', ' ').replace('-', ' ').replace('_', ' ').split())
+            common_words = query_words.intersection(tool_words)
+            score += len(common_words) * 2
+
+            print(f"     Инструмент '{tool}' имеет оценку {score}")
+
+            if score > best_score:
+                best_score = score
+                best_match = tool
+
+        if best_match and best_score > 0:
+            print(f"     🔍 Выбран инструмент с оценкой {best_score}: {best_match}")
+            return best_match
+
+        # Если ничего не нашли, возвращаем первый инструмент
+        print(f"     ⚠️ Ничего не найдено, берём первый: {valid_tools[0]}")
         return valid_tools[0]
 
     def _train_on_trajectory(self, trajectory):
@@ -522,3 +541,13 @@ class NetMCPTrainer:
             print("  📊 Графики сохранены в training_history.png")
         except ImportError:
             print("  📊 Для визуализации установите matplotlib: pip install matplotlib")
+
+    def load_checkpoint(self, checkpoint_path):
+        """Загрузка чекпоинта"""
+        from peft import PeftModel
+        try:
+            self.model = PeftModel.from_pretrained(self.model, checkpoint_path)
+            print(f"✅ Успешно загружен чекпоинт из {checkpoint_path}")
+        except Exception as e:
+            print(f"❌ Ошибка загрузки чекпоинта: {e}")
+            raise
