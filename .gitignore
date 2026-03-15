@@ -1,0 +1,63 @@
+# Виртуальное окружение
+venv/
+env/
+ENV/
+.env/
+checkpoints
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Модели и данные
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.onnx
+*.pb
+!test_*.py
+
+# Логи
+*.log
+logs/
+wandb/
+runs/
+
+# Конфиденциальное
+.env
+config_local.py
+*.key
+*.pem
+
+# Git LFS (если будете использовать)
+*.lfs
+
+# Временные файлы
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Дампы
+*.dmp
+*.prof
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# DS_Store
+.DS_Store
