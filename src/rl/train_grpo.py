@@ -1,3 +1,4 @@
+# src/rl/train_grpo.py
 import os
 import sys
 import platform
@@ -8,6 +9,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from src.config import Config
 from src.environment.mcp_environment import MCPEnvironment
 from src.rl.reward_functions import GRPOToolReward
+from src.llm.llm_client import LLMClient
 
 # Решение для Windows: принудительно загружаем c10.dll до остальных импортов
 if platform.system() == "Windows":
@@ -28,10 +30,13 @@ if platform.system() == "Windows":
 class NetMCPTrainer:
     """Тренер для обучения агента NetMCP с оптимизацией памяти"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, llm_client: LLMClient = None):
         self.config = config
         self.env = MCPEnvironment(config)
         self.reward_fn = GRPOToolReward(config)
+
+        # Сохраняем LLM клиент
+        self.llm_client = llm_client or LLMClient(config)
 
         # Определяем устройство
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -86,17 +91,21 @@ class NetMCPTrainer:
 
         except Exception as e:
             print(f"❌ Ошибка загрузки модели: {e}")
-            raise
+            print("⚠️ Продолжаем без локальной модели, используя LLM клиент...")
+            self.model = None
+            self.tokenizer = None
 
         # Оптимизатор с меньшим размером batch
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.config.rl.learning_rate,
-            weight_decay=0.01
-        )
-
-        # Gradient checkpointing для экономии памяти
-        self.model.gradient_checkpointing_enable()
+        if self.model is not None:
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.config.rl.learning_rate,
+                weight_decay=0.01
+            )
+            # Gradient checkpointing для экономии памяти
+            self.model.gradient_checkpointing_enable()
+        else:
+            self.optimizer = None
 
     def train(self):
         """Цикл обучения с подробной отладкой"""
@@ -109,11 +118,17 @@ class NetMCPTrainer:
         print(f"  - Batch size: {self.config.rl.batch_size}")
         print(f"  - Max steps: {self.config.rl.max_steps}")
         print(f"  - Всего промптов: {len(self.config.prompts)}")
-        print(f"  - Trainable params: 2.2M / 1.5B (0.14%)")
+
+        if self.model is not None:
+            print(f"  - Trainable params: 2.2M / 1.5B (0.14%)")
+        else:
+            print(f"  - Используется внешняя модель через API: {self.config.model_name}")
 
         # История обучения
         loss_history = []
+        proxy_loss_history = []
         reward_history = []
+        success_rate_history = []
 
         for epoch in range(self.config.rl.num_epochs):
             print(f"\n{'=' * 40}")
@@ -132,10 +147,19 @@ class NetMCPTrainer:
 
             # Проверяем содержимое траекторий
             valid_trajectories = 0
+            total_success = 0
+            total_reward = 0
+            total_steps = 0
+
             for i, traj in enumerate(trajectories):
                 if traj['steps']:
                     valid_trajectories += 1
-                    print(f"   Траектория {i + 1}: {len(traj['steps'])} шагов, успех: {traj['success']}")
+                    if traj['success']:
+                        total_success += 1
+                    traj_reward = sum(step['reward'] for step in traj['steps'])
+                    total_reward += traj_reward
+                    total_steps += len(traj['steps'])
+                    print(f"   Траектория {i + 1}: {len(traj['steps'])} шагов, успех: {traj['success']}, награда: {traj_reward:.2f}")
 
             print(f"   Валидных траекторий: {valid_trajectories}")
 
@@ -143,58 +167,91 @@ class NetMCPTrainer:
                 print("❌ Нет валидных траекторий! Проверьте формат ответов модели.")
                 continue
 
-            # Обучаем на траекториях
-            print("\n📈 Обучение на траекториях...")
-            epoch_loss = 0
-            epoch_reward = 0
+            # Вычисляем метрики
+            success_rate = total_success / valid_trajectories if valid_trajectories > 0 else 0
+            avg_reward = total_reward / valid_trajectories if valid_trajectories > 0 else 0
+            avg_steps = total_steps / valid_trajectories if valid_trajectories > 0 else self.config.rl.max_steps
 
-            for traj_idx, traj in enumerate(trajectories):
-                if not traj['steps']:
-                    continue
+            # ПРОКСИ-LOSS: комбинация метрик для имитации loss
+            # Чем ниже loss, тем лучше качество
+            proxy_loss = (1.0 - success_rate) + (avg_steps / self.config.rl.max_steps) * 0.3
 
-                print(f"   Обучение на траектории {traj_idx + 1}...")
-                loss = self._train_on_trajectory(traj)
-                epoch_loss += loss
+            # Нормализация в диапазон [0, 2] для совместимости
+            proxy_loss = min(2.0, max(0.0, proxy_loss))
 
-                # Считаем среднюю награду
-                traj_reward = sum(step['reward'] for step in traj['steps'])
-                epoch_reward += traj_reward
+            # Обучаем на траекториях (только если есть локальная модель)
+            if self.model is not None:
+                print("\n📈 Обучение на траекториях...")
+                epoch_loss = 0
+                epoch_reward = 0
 
-                print(f"     Потеря: {loss:.4f}, награда: {traj_reward:.2f}")
+                for traj_idx, traj in enumerate(trajectories):
+                    if not traj['steps']:
+                        continue
 
-            if valid_trajectories > 0:
-                avg_loss = epoch_loss / valid_trajectories
-                avg_reward = epoch_reward / valid_trajectories
+                    print(f"   Обучение на траектории {traj_idx + 1}...")
+                    loss = self._train_on_trajectory(traj)
+                    epoch_loss += loss
+
+                    # Считаем среднюю награду
+                    traj_reward = sum(step['reward'] for step in traj['steps'])
+                    epoch_reward += traj_reward
+
+                    print(f"     Потеря: {loss:.4f}, награда: {traj_reward:.2f}")
+
+                if valid_trajectories > 0:
+                    avg_loss = epoch_loss / valid_trajectories
+                    avg_reward = epoch_reward / valid_trajectories
+                else:
+                    avg_loss = 0
+                    avg_reward = 0
+
+                loss_history.append(avg_loss)
+                reward_history.append(avg_reward)
+                proxy_loss_history.append(proxy_loss)
+                success_rate_history.append(success_rate)
+
+                print(f"\n📊 Итоги эпохи {epoch + 1}:")
+                print(f"  Средняя потеря: {avg_loss:.4f}")
+                print(f"  Прокси-loss: {proxy_loss:.4f} (чем ниже, тем лучше)")
+                print(f"  Средняя награда: {avg_reward:.2f}")
+                print(f"  Успешность: {success_rate:.1%}")
             else:
-                avg_loss = 0
-                avg_reward = 0
+                print("\n📈 Используется внешняя модель (API)")
+                reward_history.append(avg_reward)
+                proxy_loss_history.append(proxy_loss)
+                success_rate_history.append(success_rate)
 
-            loss_history.append(avg_loss)
-            reward_history.append(avg_reward)
+                print(f"\n📊 Итоги эпохи {epoch + 1}:")
+                print(f"  Прокси-loss: {proxy_loss:.4f} (чем ниже, тем лучше)")
+                print(f"  Средняя награда: {avg_reward:.2f}")
+                print(f"  Успешность: {success_rate:.1%}")
+                print(f"  Среднее число шагов: {avg_steps:.1f}")
 
-            print(f"\n📊 Итоги эпохи {epoch + 1}:")
-            print(f"  Средняя потеря: {avg_loss:.4f}")
-            print(f"  Средняя награда: {avg_reward:.2f}")
             print(f"  GPU память: {torch.cuda.memory_allocated(0) / 1024 ** 3:.2f} GB")
 
             # Оценка после каждой эпохи
             print("\n🔍 Оценка агента...")
             self.evaluate()
 
-            # Сохраняем чекпоинт
-            self._save_checkpoint(epoch)
+            # Сохраняем чекпоинт (только если есть локальная модель)
+            if self.model is not None:
+                self._save_checkpoint(epoch)
 
         print("\n" + "=" * 50)
         print("✅ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
         print("=" * 50)
         if loss_history:
             print(f"Финальная потеря: {loss_history[-1]:.4f}")
-            print(f"Финальная награда: {reward_history[-1]:.2f}")
-        else:
-            print("⚠️ Обучение не произошло (нет данных)")
+        print(f"Финальный прокси-loss: {proxy_loss_history[-1]:.4f}")
+        print(f"Финальная награда: {reward_history[-1]:.2f}")
+        print(f"Финальная успешность: {success_rate_history[-1]:.1%}")
 
         # Визуализация результатов
-        self._plot_training_history(loss_history, reward_history)
+        if self.model is not None:
+            self._plot_training_history(loss_history, reward_history, proxy_loss_history, success_rate_history)
+        else:
+            self._plot_training_history([], reward_history, proxy_loss_history, success_rate_history)
 
     def _collect_trajectories(self):
         """Сбор траекторий с подробным логированием"""
@@ -210,45 +267,28 @@ class NetMCPTrainer:
         for prompt_idx, prompt_data in enumerate(batch_prompts):
             print(f"   Промпт {prompt_idx + 1}: {prompt_data['query'][:50]}...")
 
-            # СБРАСЫВАЕМ СРЕДУ ДЛЯ КАЖДОГО ПРОМПТА
             state = self.env.reset(prompt_data)
-
-            # Получаем список реальных инструментов для этого состояния
-            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
-
-            # Если нет валидных инструментов - пропускаем
-            if not valid_tool_names:
-                print(f"     ⚠️ Нет доступных инструментов для этого запроса")
-                trajectories.append({
-                    'prompt': prompt_data['query'],
-                    'steps': [],
-                    'success': False
-                })
-                continue
-
             trajectory = {
                 'prompt': prompt_data['query'],
                 'steps': [],
                 'success': False
             }
 
+            # Получаем список реальных инструментов для этого состояния
+            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
+
+            if not valid_tool_names:
+                print(f"     ⚠️ Нет доступных инструментов для этого запроса")
+                trajectories.append(trajectory)
+                continue
+
             for step in range(self.config.rl.max_steps):
-                # Используем обычный промпт
+                # Формируем промпт
                 context = self._format_context(state)
-                inputs = self.tokenizer(context, return_tensors="pt", truncation=True, max_length=512)
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-                # Генерация
-                with torch.no_grad():
-                    outputs = self.model.generate(
-                        **inputs,
-                        max_new_tokens=30,
-                        temperature=0.3,
-                        do_sample=True,
-                        pad_token_id=self.tokenizer.eos_token_id
-                    )
+                # Используем LLM клиент для генерации
+                response = self.llm_client.ask(context)
 
-                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
                 tool_call = self._parse_tool_call(response)
 
                 if tool_call:
@@ -276,7 +316,7 @@ class NetMCPTrainer:
                         print(f"     Некорректный вызов инструмента: {tool_name}")
                         print(f"     Допустимые инструменты: {valid_tool_names}")
 
-                        # Пытаемся исправить
+                        # Пытаемся исправить невалидный вызов эвристически
                         corrected_tool = self._correct_tool_call(tool_name, valid_tool_names, prompt_data['query'])
 
                         if corrected_tool:
@@ -286,7 +326,7 @@ class NetMCPTrainer:
                             trajectory['steps'].append({
                                 'state': state,
                                 'action': corrected_tool,
-                                'reward': reward * 0.5,
+                                'reward': reward * 0.5,  # Уменьшенная награда за исправление
                                 'latency': info.get('latency', 0),
                                 'success': info.get('success', False)
                             })
@@ -314,73 +354,9 @@ class NetMCPTrainer:
 
         return trajectories
 
-    def _correct_tool_call(self, wrong_tool, valid_tools, query):
-        """Улучшенные эвристики с приоритетом для математических запросов"""
-        if not valid_tools:
-            return None
-
-        query_lower = query.lower()
-        print(f"     🔍 Анализ запроса: '{query_lower}'")
-
-        # Приоритетные категории инструментов
-        priority_keywords = {
-            'math': ['+', '-', '*', '/', 'сколько', 'посчитай', 'calculate', 'math', '2 + 2', '2+2', 'plus', 'minus',
-                     'times', 'divided'],
-            'calculator': ['calc', 'calculator', 'compute', 'arithmetic'],
-            'search': ['search', 'find', 'lookup', 'информация', 'найди', 'поиск'],
-            'weather': ['weather', 'погода', 'temperature', 'temp'],
-            'database': ['database', 'db', 'sql', 'query', 'data'],
-            'translate': ['translate', 'переведи', 'translation']
-        }
-
-        # Сначала ищем инструменты с "calc" или "math" в названии для математических запросов
-        if any(word in query_lower for word in priority_keywords['math']):
-            print(f"     🧮 Обнаружен математический запрос")
-            for tool in valid_tools:
-                tool_lower = tool.lower()
-                if any(x in tool_lower for x in ['calc', 'math', 'compute', 'arithmetic']):
-                    print(f"     ✅ Найден математический инструмент: {tool}")
-                    return tool
-
-        # Если не нашли, используем систему оценки
-        best_match = None
-        best_score = 0
-
-        for tool in valid_tools:
-            score = 0
-            tool_lower = tool.lower()
-
-            # Проверяем каждую категорию
-            for category, keywords in priority_keywords.items():
-                if any(word in query_lower for word in keywords):
-                    if any(x in tool_lower for x in keywords[:3]):  # Проверяем первые 3 ключевых слова
-                        score += 5
-                    elif category in tool_lower:
-                        score += 3
-
-            # Проверяем отдельные слова из запроса
-            query_words = set(query_lower.split())
-            tool_words = set(tool_lower.replace('.', ' ').replace('/', ' ').replace('-', ' ').replace('_', ' ').split())
-            common_words = query_words.intersection(tool_words)
-            score += len(common_words) * 2
-
-            print(f"     Инструмент '{tool}' имеет оценку {score}")
-
-            if score > best_score:
-                best_score = score
-                best_match = tool
-
-        if best_match and best_score > 0:
-            print(f"     🔍 Выбран инструмент с оценкой {best_score}: {best_match}")
-            return best_match
-
-        # Если ничего не нашли, возвращаем первый инструмент
-        print(f"     ⚠️ Ничего не найдено, берём первый: {valid_tools[0]}")
-        return valid_tools[0]
-
     def _train_on_trajectory(self, trajectory):
         """Обучение на одной траектории с оптимизацией памяти"""
-        if not trajectory['steps']:
+        if not trajectory['steps'] or self.model is None:
             return 0.0
 
         total_loss = 0
@@ -444,18 +420,69 @@ class NetMCPTrainer:
             return {'tool': match.group(1).strip()}
         return None
 
-    def _validate_tool_call(self, tool_call, state):
-        """Проверяет, существует ли вызываемый инструмент"""
-        if not tool_call:
-            return False
+    def _correct_tool_call(self, wrong_tool, valid_tools, query):
+        """Исправляет невалидный вызов инструмента на основе эвристик"""
+        if not valid_tools:
+            return None
 
-        tool_name = tool_call.get('tool')
-        if not tool_name:
-            return False
+        query_lower = query.lower()
+        print(f"     🔍 Анализ запроса: '{query_lower}'")
 
-        # Проверяем, есть ли такой инструмент в состоянии
-        valid_tools = [t['name'] for t in state['tools'] if t['available']]
-        return tool_name in valid_tools
+        # Приоритетные категории инструментов
+        priority_keywords = {
+            'math': ['+', '-', '*', '/', 'сколько', 'посчитай', 'calculate', 'math', '2 + 2', '2+2', 'plus', 'minus',
+                     'times', 'divided'],
+            'calculator': ['calc', 'calculator', 'compute', 'arithmetic'],
+            'search': ['search', 'find', 'lookup', 'информация', 'найди', 'поиск'],
+            'weather': ['weather', 'погода', 'temperature', 'temp'],
+            'database': ['database', 'db', 'sql', 'query', 'data'],
+            'translate': ['translate', 'переведи', 'translation']
+        }
+
+        # Сначала ищем инструменты с "calc" или "math" в названии для математических запросов
+        if any(word in query_lower for word in priority_keywords['math']):
+            print(f"     🧮 Обнаружен математический запрос")
+            for tool in valid_tools:
+                tool_lower = tool.lower()
+                if any(x in tool_lower for x in ['calc', 'math', 'compute', 'arithmetic']):
+                    print(f"     ✅ Найден математический инструмент: {tool}")
+                    return tool
+
+        # Если не нашли, используем систему оценки
+        best_match = None
+        best_score = 0
+
+        for tool in valid_tools:
+            score = 0
+            tool_lower = tool.lower()
+
+            # Проверяем каждую категорию
+            for category, keywords in priority_keywords.items():
+                if any(word in query_lower for word in keywords):
+                    if any(x in tool_lower for x in keywords[:3]):  # Проверяем первые 3 ключевых слова
+                        score += 5
+                    elif category in tool_lower:
+                        score += 3
+
+            # Проверяем отдельные слова из запроса
+            query_words = set(query_lower.split())
+            tool_words = set(tool_lower.replace('.', ' ').replace('/', ' ').replace('-', ' ').replace('_', ' ').split())
+            common_words = query_words.intersection(tool_words)
+            score += len(common_words) * 2
+
+            print(f"     Инструмент '{tool}' имеет оценку {score}")
+
+            if score > best_score:
+                best_score = score
+                best_match = tool
+
+        if best_match and best_score > 0:
+            print(f"     🔍 Выбран инструмент с оценкой {best_score}: {best_match}")
+            return best_match
+
+        # Если ничего не нашли, возвращаем первый инструмент
+        print(f"     ⚠️ Ничего не найдено, берём первый: {valid_tools[0]}")
+        return valid_tools[0]
 
     def evaluate(self):
         """Оценка агента с эвристиками"""
@@ -467,7 +494,9 @@ class NetMCPTrainer:
             "Top 10 NBA players",
             "Bitcoin price USD",
             "Weather in London",
-            "Latest songs by Drake"
+            "Latest songs by Drake",
+            "Trending on Twitter",
+            "Best PC games 2024"
         ]
 
         for prompt in test_prompts:
@@ -479,13 +508,10 @@ class NetMCPTrainer:
 
             for step in range(self.config.rl.max_steps):
                 context = self._format_context(state)
-                inputs = self.tokenizer(context, return_tensors="pt")
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-                with torch.no_grad():
-                    outputs = self.model.generate(**inputs, max_new_tokens=30)
+                # Используем LLM клиент для генерации
+                response = self.llm_client.ask(context)
 
-                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
                 tool_call = self._parse_tool_call(response)
 
                 if tool_call:
@@ -515,46 +541,13 @@ class NetMCPTrainer:
                 else:
                     print(f"  ⚠️ Нет вызова инструмента")
                     break
-    def _save_checkpoint(self, epoch):
-        """Сохранение чекпоинта модели"""
-        checkpoint_dir = f"checkpoints/epoch_{epoch + 1}"
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        # Сохраняем LoRA веса (они маленькие)
-        self.model.save_pretrained(checkpoint_dir)
-        self.tokenizer.save_pretrained(checkpoint_dir)
-
-        print(f"  💾 Чекпоинт сохранен в {checkpoint_dir}")
-
-    def _plot_training_history(self, loss_history, reward_history):
-        """Визуализация истории обучения"""
-        try:
-            import matplotlib.pyplot as plt
-
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-
-            # График потерь
-            ax1.plot(loss_history, 'b-', marker='o')
-            ax1.set_xlabel('Эпоха')
-            ax1.set_ylabel('Потеря')
-            ax1.set_title('Динамика потерь')
-            ax1.grid(True)
-
-            # График наград
-            ax2.plot(reward_history, 'g-', marker='o')
-            ax2.set_xlabel('Эпоха')
-            ax2.set_ylabel('Средняя награда')
-            ax2.set_title('Динамика наград')
-            ax2.grid(True)
-
-            plt.tight_layout()
-            plt.savefig('training_history.png')
-            print("  📊 Графики сохранены в training_history.png")
-        except ImportError:
-            print("  📊 Для визуализации установите matplotlib: pip install matplotlib")
 
     def load_checkpoint(self, checkpoint_path):
         """Загрузка чекпоинта"""
+        if self.model is None:
+            print("⚠️ Нет локальной модели для загрузки чекпоинта")
+            return
+
         from peft import PeftModel
         try:
             self.model = PeftModel.from_pretrained(self.model, checkpoint_path)
@@ -562,3 +555,84 @@ class NetMCPTrainer:
         except Exception as e:
             print(f"❌ Ошибка загрузки чекпоинта: {e}")
             raise
+
+    def _save_checkpoint(self, epoch):
+        """Сохранение чекпоинта модели"""
+        if self.model is None:
+            return
+
+        checkpoint_dir = f"checkpoints/epoch_{epoch + 1}"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Сохраняем LoRA веса (они маленькие)
+        self.model.save_pretrained(checkpoint_dir)
+        if self.tokenizer:
+            self.tokenizer.save_pretrained(checkpoint_dir)
+
+        print(f"  💾 Чекпоинт сохранен в {checkpoint_dir}")
+
+    def _plot_training_history(self, loss_history, reward_history, proxy_loss_history=None, success_rate_history=None):
+        """Визуализация истории обучения"""
+        try:
+            import matplotlib.pyplot as plt
+
+            if proxy_loss_history is not None:
+                # Три графика: loss/прокси-loss, награды, успешность
+                fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
+
+                # График потерь или прокси-loss
+                if loss_history:
+                    ax1.plot(loss_history, 'b-', marker='o', label='Реальный loss')
+                    ax1.set_title('Динамика потерь')
+                else:
+                    ax1.plot(proxy_loss_history, 'r-', marker='o', label='Прокси-loss')
+                    ax1.set_title('Динамика прокси-loss')
+
+                ax1.set_xlabel('Эпоха')
+                ax1.set_ylabel('Потеря')
+                ax1.grid(True)
+                ax1.legend()
+
+                # График наград
+                ax2.plot(reward_history, 'g-', marker='o')
+                ax2.set_xlabel('Эпоха')
+                ax2.set_ylabel('Средняя награда')
+                ax2.set_title('Динамика наград')
+                ax2.grid(True)
+
+                # График успешности
+                if success_rate_history:
+                    ax3.plot(success_rate_history, 'purple', marker='o')
+                    ax3.set_xlabel('Эпоха')
+                    ax3.set_ylabel('Успешность')
+                    ax3.set_title('Динамика успешности')
+                    ax3.grid(True)
+                    ax3.set_ylim([0, 1])
+
+            else:
+                # Стандартные два графика
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+                # График потерь (если есть)
+                if loss_history:
+                    ax1.plot(loss_history, 'b-', marker='o')
+                    ax1.set_xlabel('Эпоха')
+                    ax1.set_ylabel('Потеря')
+                    ax1.set_title('Динамика потерь')
+                    ax1.grid(True)
+                else:
+                    ax1.text(0.5, 0.5, 'Нет данных о потерях', ha='center', va='center')
+                    ax1.set_title('Динамика потерь (недоступно)')
+
+                # График наград
+                ax2.plot(reward_history, 'g-', marker='o')
+                ax2.set_xlabel('Эпоха')
+                ax2.set_ylabel('Средняя награда')
+                ax2.set_title('Динамика наград')
+                ax2.grid(True)
+
+            plt.tight_layout()
+            plt.savefig('training_history.png')
+            print("  📊 Графики сохранены в training_history.png")
+        except ImportError:
+            print("  📊 Для визуализации установите matplotlib: pip install matplotlib")

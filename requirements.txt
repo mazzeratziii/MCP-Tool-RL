@@ -5,6 +5,9 @@ tqdm==4.66.5
 matplotlib==3.8.4
 requests==2.31.0
 pyyaml==6.0.1
+python-dotenv>=1.0.0
+httpx>=0.27.0
+openai>=1.0.0
 
 # PyTorch с CUDA 12.4
 --extra-index-url https://download.pytorch.org/whl/cu124

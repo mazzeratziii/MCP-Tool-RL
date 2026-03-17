@@ -1,4 +1,4 @@
-
+# main.py
 import os
 import sys
 import platform
@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src'
 
 from src.config import Config
 from src.rl.train_grpo import NetMCPTrainer
+from src.llm.llm_client import LLMClient
 
 
 def main():
@@ -33,17 +34,21 @@ def main():
     parser.add_argument("--mode", type=str, default="train",
                         choices=["train", "evaluate", "interactive"])
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to checkpoint to load (e.g., checkpoints/epoch_20)")
 
     args = parser.parse_args()
 
+    # Загружаем конфигурацию (модель уже будет из .env)
     config = Config()
     config.rl.num_epochs = args.epochs
-    config.model_name = args.model
 
-    trainer = NetMCPTrainer(config)
+    # Создаем LLM клиент для использования в обучении
+    llm_client = LLMClient(config)
+    print(f"✅ LLM клиент создан для модели: {config.model_name}")
+
+    # Создаем тренера с передачей LLM клиента
+    trainer = NetMCPTrainer(config, llm_client)
 
     # Загружаем чекпоинт если указан
     if args.checkpoint:
@@ -62,10 +67,10 @@ def main():
     elif args.mode == "evaluate":
         trainer.evaluate()
     elif args.mode == "interactive":
-        run_interactive(trainer)
+        run_interactive(trainer, llm_client)
 
 
-def run_interactive(trainer):
+def run_interactive(trainer, llm_client):
     """Интерактивный режим для тестирования с исправлением вызовов"""
     print("\n=== NetMCP Interactive Mode ===")
     print("Введите ваш запрос (или 'quit' для выхода):")
@@ -107,20 +112,10 @@ def run_interactive(trainer):
         for step in range(trainer.config.rl.max_steps):
             # Формируем промпт
             context = trainer._format_context(state)
-            inputs = trainer.tokenizer(context, return_tensors="pt", truncation=True, max_length=512)
-            inputs = {k: v.to(trainer.device) for k, v in inputs.items()}
 
-            # Генерация
-            with torch.no_grad():
-                outputs = trainer.model.generate(
-                    **inputs,
-                    max_new_tokens=30,
-                    temperature=0.3,
-                    do_sample=True,
-                    pad_token_id=trainer.tokenizer.eos_token_id
-                )
+            # Используем LLM клиент для генерации ответа
+            response = llm_client.ask(context)
 
-            response = trainer.tokenizer.decode(outputs[0], skip_special_tokens=True)
             tool_call = trainer._parse_tool_call(response)
 
             if tool_call:

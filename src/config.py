@@ -1,18 +1,21 @@
-
+# config.py (исправленный)
+import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from src.data.toolbench_loader import ToolBenchLoader
 from src.tools.tool_selector import ToolSelector
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
 class NetworkConfig:
-    """Конфигурация эмуляции сети"""
+    # ... (оставить как есть)
     base_latency_range: Tuple[float, float] = (0.05, 1.0)
     jitter_range: Tuple[float, float] = (0.01, 0.2)
     failure_rate_range: Tuple[float, float] = (0.01, 0.2)
     congestion_factor_range: Tuple[float, float] = (0.5, 2.0)
-
     base_latency: float = 0.1
     jitter: float = 0.05
     failure_rate: float = 0.1
@@ -21,15 +24,13 @@ class NetworkConfig:
 
 @dataclass
 class ToolBenchConfig:
-    """Конфигурация загрузки ToolBench"""
     split: str = "train"
-    sample_size: Optional[int] = 30000
-    num_tools: int = 7000
+    sample_size: Optional[int] = 50000
+    num_tools: int = 9000
 
 
 @dataclass
 class RLConfig:
-    """Конфигурация RL"""
     algorithm: str = "grpo"
     learning_rate: float = 2e-5
     batch_size: int = 2
@@ -42,7 +43,6 @@ class RLConfig:
 
 @dataclass
 class RewardConfig:
-    """Конфигурация системы наград"""
     success_reward: float = 1.0
     failure_penalty: float = -1.0
     step_penalty: float = -0.1
@@ -66,8 +66,17 @@ class Config:
         self.rl = RLConfig()
         self.reward = RewardConfig()
 
-        # Модель для обучения
-        self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        # ✅ Загружаем настройки модели из .env
+        self.model_name = os.getenv('MODEL_NAME')
+        self.openai_base_url = os.getenv('OPENAI_BASE_URL')
+        self.openai_api_token = os.getenv('OPENAI_API_TOKEN')
+        self.system_prompt = os.getenv('SYSTEM_PROMPT')
+        self.user_prompt = os.getenv('USER_PROMPT')
+        self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
+        self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '30.0'))
+
+        # ✅ Валидация
+        self._validate()
 
         # Загружаем данные из ToolBench
         print("\n📊 ЗАГРУЗКА ДАННЫХ ИЗ TOOLBENCH")
@@ -79,18 +88,14 @@ class Config:
         # Создаем селектор инструментов
         print("\n🎯 СОЗДАНИЕ СЕЛЕКТОРА ИНСТРУМЕНТОВ")
         self.tool_selector = ToolSelector(self.loader.tools)
-
-        # Выводим статистику по категориям
         self.tool_selector.print_category_stats()
 
         # Выбираем инструменты для обучения
         print(f"\n🔧 ВЫБОРКА {self.toolbench.num_tools} ИНСТРУМЕНТОВ ДЛЯ ОБУЧЕНИЯ")
-
-        # Стратегия выборки: смесь популярных и специализированных инструментов
         selected_tools = []
 
         # 1. Берем инструменты из каждой категории
-        tools_per_category = max(5, self.toolbench.num_tools // 10)  # ~10 категорий
+        tools_per_category = max(5, self.toolbench.num_tools // 10)
         for category, data in self.tool_selector.CATEGORIES.items():
             if data['tools']:
                 category_tools = data['tools'][:tools_per_category]
@@ -100,7 +105,6 @@ class Config:
         # 2. Если не хватает, добавляем популярные инструменты
         if len(selected_tools) < self.toolbench.num_tools:
             remaining = self.toolbench.num_tools - len(selected_tools)
-            # Берем инструменты с самыми длинными описаниями (более информативные)
             sorted_tools = sorted(
                 self.loader.tools,
                 key=lambda x: len(x.get('description', '')),
@@ -117,7 +121,7 @@ class Config:
         self.tools = selected_tools[:self.toolbench.num_tools]
         print(f"\n✅ ИТОГО: {len(self.tools)} инструментов отобрано")
 
-        # Показываем распределение по категориям
+        # Распределение по категориям
         category_distribution = {}
         for tool in self.tools:
             cat = tool.get('category', 'Unknown')
@@ -131,12 +135,10 @@ class Config:
         print("\n📝 ПОДГОТОВКА ПРОМПТОВ ДЛЯ ОБУЧЕНИЯ")
         self.prompts = self.loader.get_training_prompts()
 
-        # Фильтруем промпты, оставляя только те, для которых есть инструменты
         valid_prompts = []
         tool_names = {t['name'] for t in self.tools}
 
         for prompt in self.prompts:
-            # Проверяем, есть ли релевантные инструменты в нашем наборе
             relevant = [t for t in prompt.get('relevant_tools', []) if t['name'] in tool_names]
             if relevant:
                 prompt['relevant_tools'] = relevant
@@ -150,28 +152,18 @@ class Config:
         print("✅ КОНФИГУРАЦИЯ ЗАВЕРШЕНА")
         print("=" * 60)
 
+    def _validate(self):
+        """Проверка наличия обязательных параметров"""
+        if not self.openai_base_url:
+            raise ValueError("OPENAI_BASE_URL не установлен в .env файле")
+
+        print(f"✅ Конфигурация загружена:")
+        print(f"   Модель: {self.model_name}")
+        print(f"   Base URL: {self.openai_base_url}")
+        print(f"   Max concurrent: {self.max_concurrent_requests}")
+
     def get_tools_by_category(self, category: str) -> List[Dict]:
-        """Получение инструментов по категории"""
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]
 
     def get_tools_for_query(self, query: str, num_tools: int = 20) -> List[Dict]:
-        """Получение инструментов, подходящих для конкретного запроса"""
         return self.tool_selector.select_tools_for_query(query, num_tools)
-
-    """def print_config_summary(self):
-        ""Вывод сводки по конфигурации""
-        print("\n" + "=" * 60)
-        print("📋 СВОДКА КОНФИГУРАЦИИ")
-        print("=" * 60)
-        print(f"Модель: {self.model_name}")
-        print(f"Режим: {self.toolbench.split}")
-        print(f"Примеров в датасете: {len(self.loader.data)}")
-        print(f"Всего инструментов: {len(self.loader.tools)}")
-        print(f"Отобрано инструментов: {len(self.tools)}")
-        print(f"Промптов для обучения: {len(self.prompts)}")
-        print(f"\nПараметры RL:")
-        print(f"  - Эпох: {self.rl.num_epochs}")
-        print(f"  - Batch size: {self.rl.batch_size}")
-        print(f"  - Learning rate: {self.rl.learning_rate}")
-        print(f"  - Max steps: {self.rl.max_steps}")
-        print("=" * 60)"""
