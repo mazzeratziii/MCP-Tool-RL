@@ -1,5 +1,3 @@
-# src/prompts.py
-
 def get_dynamic_prompt(query, tools):
     """Создает промпт с актуальным списком инструментов и примерами"""
 

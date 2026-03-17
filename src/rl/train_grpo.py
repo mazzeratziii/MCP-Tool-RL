@@ -1,4 +1,3 @@
-# src/rl/train_grpo.py
 import os
 import sys
 import platform
