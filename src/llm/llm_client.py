@@ -1,68 +1,71 @@
-# llm_client.py
-import asyncio
+import torch
 from typing import List, Optional
-from src.llm.llm_wrapper import LLMWrapper
-from src.config import Config  # ✅ правильный импорт
+from src.config import Config
 
 
 class LLMClient:
-    """Клиент для работы с LLM через LLMWrapper"""
+    def __init__(self, config: Config, local_model=None, local_tokenizer=None):
+        self.config = config
+        self.local_model = local_model
+        self.local_tokenizer = local_tokenizer
 
-    def __init__(self, config: Optional[Config] = None):
-        # Если конфиг не передан, создаём новый
-        self.config = config or Config()
-
-        # Валидация конфигурации (уже есть в __init__ Config)
-        self.wrapper = LLMWrapper(
-            model_name=self.config.model_name,
-            openai_base_url=self.config.openai_base_url,
-            openai_api_token=self.config.openai_api_token,
-            sys_prompt=self.config.system_prompt,
-            prompt=self.config.user_prompt,
-            min_request_timeout=self.config.min_request_timeout,
-            max_concurrent_requests=self.config.max_concurrent_requests
-        )
+        if self.local_model is not None:
+            print(f"Using LOCAL model: {config.model_name}")
+            self._use_local = True
+        else:
+            print(f"Using API model: {config.model_name}")
+            self._use_local = False
 
     def ask(self, question: str) -> str:
-        results = self.ask_batch([question])
-        return results[0] if results else ""
+        if not self._use_local or self.local_model is None:
+            print("Warning: No local model available")
+            return ""
+
+        return self._ask_local(question)
 
     def ask_batch(self, questions: List[str]) -> List[str]:
         if not questions:
             return []
-        print(f"🔄 Отправка {len(questions)} запросов к {self.config.model_name}...")
-        results = self.wrapper.recognize_contents(questions)
-        print(f"✅ Получено {len(results)} ответов")
-        return results
+        if not self._use_local or self.local_model is None:
+            print("Warning: No local model available")
+            return [""] * len(questions)
+        return [self._ask_local(q) for q in questions]
 
-    async def ask_async(self, question: str) -> str:
-        results = await self.ask_batch_async([question])
-        return results[0] if results else ""
+    def _ask_local(self, question: str) -> str:
+        if self.local_model is None or self.local_tokenizer is None:
+            return ""
 
-    def ask_batch_async(self, questions: List[str]) -> List[str]:
-        if not questions:
-            return []
-        print(f"🔄 Отправка {len(questions)} запросов к {self.config.model_name}...")
-        results = self.wrapper.recognize_contents(questions)
+        try:
+            messages = []
+            if self.config.system_prompt:
+                messages.append({"role": "system", "content": self.config.system_prompt})
+            messages.append({"role": "user", "content": question})
 
-        # Обработка пустых ответов
-        processed_results = []
-        for i, (q, r) in enumerate(zip(questions, results)):
-            if not r or r.strip() == "" or r.strip() == "None":
-                print(f"⚠️ Пустой ответ на вопрос {i + 1}, повторяем...")
-                # Повторный запрос
-                r = self.wrapper.recognize_contents([q])[0]
-            processed_results.append(r)
+            text = self.local_tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
 
-        print(f"✅ Получено {len(processed_results)} ответов")
-        return processed_results
+            inputs = self.local_tokenizer(text, return_tensors="pt").to(self.local_model.device)
 
-    def create_child(self, system_prompt: Optional[str] = None, user_prompt: Optional[str] = None) -> 'LLMClient':
-        child_wrapper = self.wrapper.create_child(
-            prompt=user_prompt,
-            sys_prompt=system_prompt
-        )
-        new_client = LLMClient.__new__(LLMClient)
-        new_client.config = self.config
-        new_client.wrapper = child_wrapper
-        return new_client
+            with torch.no_grad():
+                outputs = self.local_model.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=self.local_tokenizer.eos_token_id,
+                    repetition_penalty=1.05
+                )
+
+            response = self.local_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            if response.startswith(text):
+                response = response[len(text):].strip()
+
+            return response
+
+        except Exception as e:
+            print(f"Local inference error: {e}")
+            return ""

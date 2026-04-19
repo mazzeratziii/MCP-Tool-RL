@@ -1,0 +1,502 @@
+[
+  {
+    "name": "Fish species./fish_api/group",
+    "category": "Data",
+    "description": "This endpoint will group the available data by the <code>property_value</code> parameter. The available URL query parameters are <code>meta_property</code>,  <code>meta_property_attribute</code>, and "
+  },
+  {
+    "name": "Real Estate Records.summary",
+    "category": "Data",
+    "description": "Get a summary of property records by units given an address (if it's a multi-unit building). Street number, name and zipcode are needed to match records. The street names are normalized using Here.com"
+  },
+  {
+    "name": "Real Estate Records.address",
+    "category": "Data",
+    "description": "Get a high level of summary of property records given an address. Street number, name and zipcode are needed to match records. The street names are normalized using Here.com conventions. **This API is"
+  },
+  {
+    "name": "VALUE SERP.Google Product Online Sellers",
+    "category": "Data",
+    "description": "The Google Product Online Sellers Parameters are applicable when making a request with `search_type=product` and `product_type=sellers_online` to retrieve product online sellers results for a given pr"
+  },
+  {
+    "name": "VALUE SERP.Google Product Specifications",
+    "category": "Data",
+    "description": "The Google Product Specifications Parameters are applicable when making a request with `search_type=product` and `product_type=specifications` to retrieve product specifications results for a given pr"
+  },
+  {
+    "name": "VALUE SERP.Google Product Reviews",
+    "category": "Data",
+    "description": "The Google Product Reviews Parameters are applicable when making a request with `search_type=product` and `product_type=reviews` to retrieve product reviews results for a given product ID. The product"
+  },
+  {
+    "name": "Power BI Smartable.GetPeople",
+    "category": "Data",
+    "description": "Get Power BI influencers."
+  },
+  {
+    "name": "Zillow_v2.Walk, Transit and Bike Score",
+    "category": "Data",
+    "description": "Get Walk, Transit and Bike Score of a property by zpid"
+  },
+  {
+    "name": "Realtor API for Real Estate Data.RealtorAgentList",
+    "category": "Data",
+    "description": "This endpoint will give you the Realtor Agent List with the data as given below, if you provide the city, state_code and page.\nParameters:\ncity: San Jose or New York\nstate_code: CA or NY\npage: min = 1"
+  },
+  {
+    "name": "Lotto Draw Results - Global.Game List",
+    "category": "Data",
+    "description": "Games available by country."
+  },
+  {
+    "name": "Lotto Draw Results - Global.Get Draw Result",
+    "category": "Data",
+    "description": "Get draw result by given region, game and draw date."
+  },
+  {
+    "name": "Azure Smartable.GetPeople",
+    "category": "Data",
+    "description": "Get Azure influencers."
+  },
+  {
+    "name": "Azure Smartable.GetPeopleByTopic",
+    "category": "Data",
+    "description": "Get Azure influencers by topic."
+  },
+  {
+    "name": "Dog breeds.Group breed data by property",
+    "category": "Data",
+    "description": "This endpoint will group the available data by the given property and the property value. The property can be any property of the JSON response object including the properties of the meta object. \n\nTh"
+  },
+  {
+    "name": "Trinidad Covid 19 Statistics.getMostRecentDay",
+    "category": "Data",
+    "description": "This endpoint fetches the most recent Trinidad & Tobago Covid 19 statistics.  It returns data for that specific day alone."
+  },
+  {
+    "name": "Trinidad Covid 19 Statistics.getStatsbyDay",
+    "category": "Data",
+    "description": "This endpoint fetches Trinidad & Tobago Covid 19 statistics by  day. For a valid response, the months are input as \"01\" or \"12\" and not the actual month name such as \"January\" or \"December\". Th e days"
+  },
+  {
+    "name": "Trinidad Covid 19 Statistics.getStatsbyYear",
+    "category": "Data",
+    "description": "This endpoint delivers Trinidad & Tobago Covid 19 statistics by year. For a valid response, the beginning year is 2020 and the latest year is the current year."
+  },
+  {
+    "name": "Trinidad Covid 19 Statistics.getStatsbyMonth",
+    "category": "Data",
+    "description": "This endpoint fetches Trinidad & Tobago Covid 19 statistics by month. For a valid response, the months are input as \"01\" or \"12\" and not the actual month name such as \"January\" or \"December\"."
+  },
+  {
+    "name": "Store Apps.Top Grossing Games",
+    "category": "Data",
+    "description": "Top grossing games chart."
+  },
+  {
+    "name": "Store Apps.Top Free Games",
+    "category": "Data",
+    "description": "Top free games chart."
+  },
+  {
+    "name": "Store Apps.Top Paid Games",
+    "category": "Data",
+    "description": "Top paid games chart."
+  },
+  {
+    "name": "US States.Get states by FIPS",
+    "category": "Data",
+    "description": "Retrieve all fields for states matching the provided FIPS code(s).  Multiple FIPS codes can be provided separated by commas."
+  },
+  {
+    "name": "US States.Search states by capital",
+    "category": "Data",
+    "description": "Retrieve all fields for states/territories matching the provided capital.  Partial and full name searches are accepted."
+  },
+  {
+    "name": "US States.Get states by census region",
+    "category": "Data",
+    "description": "Retrieve all fields for states matching the provided Census Region(s).  Multiple census regions can be provided separated by commas."
+  },
+  {
+    "name": "US States.Get states by abbreviation",
+    "category": "Data",
+    "description": "Retrieve all fields for states/territories matching the provided abbreviation(s).  Multiple abbreviations can be provided separated by commas."
+  },
+  {
+    "name": "US States.Get states by census division",
+    "category": "Data",
+    "description": "Retrieve all fields for states matching the provided Census Division(s).  Multiple census divisions can be provided separated by commas."
+  },
+  {
+    "name": "TheClique.Transfermarkt details",
+    "category": "Data",
+    "description": "Enter **SLUG ** from Transfermarkt search API.\n\nIt os working for all types (players, clubs, managers, referees, etc)"
+  },
+  {
+    "name": "NREL National Renewable Energy Laboratory.All Stations",
+    "category": "Data",
+    "description": "Return a full list of alternative fuel stations that match your query."
+  },
+  {
+    "name": "Player Data./search_by_weight",
+    "category": "Data",
+    "description": "<br /><br />\n<b>Authentication:</b> not required"
+  },
+  {
+    "name": "Player Data./SearchPlayer",
+    "category": "Data",
+    "description": "<br /><br />\n<b>Authentication:</b> not required"
+  },
+  {
+    "name": "House Plants.GetBySearch",
+    "category": "Data",
+    "description": "Searches through all plants and returns the closest results matching \"Latin name\", \"Family\", \"Other names\", \"Common name\", \"Common name (fr.)\", \"Description\", \"Categories\", \"Origin\" in order by highes"
+  },
+  {
+    "name": "PowerBI.GetPeople",
+    "category": "Data",
+    "description": "Get Power BI influencers."
+  },
+  {
+    "name": "PowerBI.GetPeopleByTopic",
+    "category": "Data",
+    "description": "Get Power BI influencers by topic."
+  },
+  {
+    "name": "Youtube v3 Lite.Videos",
+    "category": "Data",
+    "description": "Get YouTube Video details.\nQuota cost is 1. For statistics part, quota is +1."
+  },
+  {
+    "name": "OpenSea Data Query.Retrieving a collection",
+    "category": "Data",
+    "description": "Used for retrieving more in-depth information about individual collections, including real time statistics like floor price."
+  },
+  {
+    "name": "OpenSea Data Query.Retrieving collection stats",
+    "category": "Data",
+    "description": "Use this endpoint to fetch stats for a specific collection, including realtime floor price statistics"
+  },
+  {
+    "name": "Opensea_v2.Retrieve collection stats",
+    "category": "Data",
+    "description": "This endpoint can be used to fetch stats for a specific collection, including real-time floor price data."
+  },
+  {
+    "name": "Opensea_v2.Retrieve a collection",
+    "category": "Data",
+    "description": "This endpoint is used to retrieve more in-depth information about an individual collection, including real time statistics such as floor price."
+  },
+  {
+    "name": "Addressr./addresses",
+    "category": "Data",
+    "description": "returns a list of addresses matching the search string\n"
+  },
+  {
+    "name": "Quality Porn.Video search",
+    "category": "Video_Images",
+    "description": "Search for quality porn and get a provider-subdivided list of the best matching videos.\n\n### Examples\n\nSearch only HD videos that have been rated best with the search term \"amateur\".\n`/search?quality="
+  },
+  {
+    "name": "List Movies.Query Term",
+    "category": "Video_Images",
+    "description": "Used for movie search, matching on: Movie Title/IMDb Code, Actor Name/IMDb Code, Director Name/IMDb Code"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime wallpapers related to the wedding by pagination",
+    "category": "Video_Images",
+    "description": "Get anime wallpapers related to the wedding:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then It "
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime wallpapers related to the couple by pagination",
+    "category": "Video_Images",
+    "description": "Get anime wallpapers related to the couple:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then It w"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime wallpapers related to the christmas with pagination",
+    "category": "Video_Images",
+    "description": "Get  anime wallpapers related to the christmas:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then "
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime Illustrations by pagination",
+    "category": "Video_Images",
+    "description": "Get anime illustrations made by anime fans:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then It w"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Recent Wallpapers by pagination",
+    "category": "Video_Images",
+    "description": "Get recent anime wallpapers without any categorization:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Search by animename, art_id",
+    "category": "Video_Images",
+    "description": "Search by animename, art_id\n\nRequired GET parameter\n\n**page**: 1\n**sensitivity**: 1\n**searchText**: 'Tokyo'\n**exact**: 0\n\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the pa"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime boy wallpapers by pagination",
+    "category": "Video_Images",
+    "description": "Get anime boy wallpapers:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then It will bring the next"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime wallpapers related to the family by pagination",
+    "category": "Video_Images",
+    "description": "Get anime wallpapers related to the family:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then It w"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Anime wallpapers related to the halloween by pagination",
+    "category": "Video_Images",
+    "description": "Get anime wallpapers related to the halloween:\nRequired GET parameter\n**page**:  1\n**sensitivity**: 1\nOn the above **page**, 1 means it will fetch the latest 10 wallpaper if the page value is 2 then I"
+  },
+  {
+    "name": "Premium-Anime-Mobile-Wallpapers-Illustrations.Premium anime wallpapers by pagination",
+    "category": "Video_Images",
+    "description": "Premium anime arts are wallpapers that look best of the best on a mobile device or contain high-quality digital art:\nRequired GET parameter\n**page**:  0\n**sensitivity**: 1\nOn the above **page**, 0 mea"
+  },
+  {
+    "name": "ClearDil.Fetchoneassociationbelongingtoamatch",
+    "category": "Financial",
+    "description": " "
+  },
+  {
+    "name": "ClearDil.Fetchallassociationsbelongingtoamatch",
+    "category": "Financial",
+    "description": " "
+  },
+  {
+    "name": "ClearDil.Fetchamatch",
+    "category": "Financial",
+    "description": " "
+  },
+  {
+    "name": "ClearDil.Fetchallmatches",
+    "category": "Financial",
+    "description": " "
+  },
+  {
+    "name": "StreamlineWatch - Streaming Guide.search",
+    "category": "Media",
+    "description": "Returns a list of titles that match the query."
+  },
+  {
+    "name": "public-url-share.Media sources statistics",
+    "category": "Media",
+    "description": "Search and find details or statistics on media sources"
+  },
+  {
+    "name": "Bet-at-Home.Matches",
+    "category": "Sports",
+    "description": "Latest matches by Bet-at-Home"
+  },
+  {
+    "name": "Serie A.Match details by Id",
+    "category": "Sports",
+    "description": "Via this endpoint, you can retrieve the match details given a certain Match Id. Match Ids can be obtained through the Matches List endpoint. You can also query for live matches and for matches played "
+  },
+  {
+    "name": "Serie A.Team Stats by Category",
+    "category": "Sports",
+    "description": "This endpoints allows you to retrieve players statistics accross different categories. Possible categories are: goals, shots, assists, crosses, saves, avgkmtraveled, headshotgoals , offsides,  corners"
+  },
+  {
+    "name": "Serie A.Matches List by Season and Matchday",
+    "category": "Sports",
+    "description": "Via this endpoint, you can retrieve all the matches that occurred on a given matchday in a given season. Note that we support season starting from **1990** till **2022**, and matchday between **1** an"
+  },
+  {
+    "name": "Serie A.Current Leaderboard",
+    "category": "Sports",
+    "description": "Use this endpoint to retrieve the current leaderboard, updated at the last match played."
+  },
+  {
+    "name": "Serie A.Players Stats by Category",
+    "category": "Sports",
+    "description": "This endpoints allows you to retrieve players statistics accross different categories. Possible categories are: shots, goals, ballrecovery, foulsuffered, assists, keypasses, headgoals, posts, gksaves,"
+  },
+  {
+    "name": "Dafabet.Matches",
+    "category": "Sports",
+    "description": "Latest Matches for Dafabet"
+  },
+  {
+    "name": "MLB Data.Player Teams",
+    "category": "Sports",
+    "description": "Retrieve the teams a player has played for over the course of a season, or their career."
+  },
+  {
+    "name": "MLB Data.Player Search",
+    "category": "Sports",
+    "description": "Search for active and historic/inactive players by name.  The active_sw parameter should be set depending on whether you want to search for active or inactive players. You can omit this parameter, tho"
+  },
+  {
+    "name": "MLB Data.Pitching Leaders",
+    "category": "Sports",
+    "description": "Retrieve n leaders for a given hitting statistic.  This endpoint is best used alongside col_in/col_ex to prune response data. Without, it returns entire player objects.  For best results, include the "
+  },
+  {
+    "name": "MLB Data.Injuries",
+    "category": "Sports",
+    "description": "Retrieve all players which are currently injured."
+  },
+  {
+    "name": "MLB Data.Get Transactions Over Period",
+    "category": "Sports",
+    "description": "Retrieve all transactions between a given period. start_date and end_date parameters should be in the YYYYMMDD format."
+  },
+  {
+    "name": "MLB Data.Get 40-Man Roster",
+    "category": "Sports",
+    "description": "Retrieve a team’s 40 man roster."
+  },
+  {
+    "name": "MLB Data.Hitting Leaders",
+    "category": "Sports",
+    "description": "Retrieve n leaders for a given hitting statistic.  This endpoint is best used alongside col_in/col_ex to prune response data. Without, it returns entire player objects.  For best results, include the "
+  },
+  {
+    "name": "MLB Data.Game Type Info",
+    "category": "Sports",
+    "description": "Retrieve a list of one or numerous game types.  For example, if you wanted to know when the National League Championship Series was played, this endpoint could tell you that."
+  },
+  {
+    "name": "MLB Data.Projected Pitching Stats",
+    "category": "Sports",
+    "description": "Retrieve a players projected pitching stats for a given season.  Omitting the season parameter will return the actual stats for the players earliest major league season."
+  },
+  {
+    "name": "MLB Data.Season Hitting Stats",
+    "category": "Sports",
+    "description": "Retrieve a players hitting stats for a given season."
+  },
+  {
+    "name": "Betcity.Matches",
+    "category": "Sports",
+    "description": "Latest matches by Betcity"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Team Season Statistics",
+    "category": "Sports",
+    "description": "Returns statistics for teams"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Live Game Data",
+    "category": "Sports",
+    "description": "This endpoint provides real-time game box scores."
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Player Information",
+    "category": "Sports",
+    "description": "This endpoint returns player demographic information"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Team Information",
+    "category": "Sports",
+    "description": "This endpoint returns team information"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Team Depth Charts",
+    "category": "Sports",
+    "description": "Returns player depth charts for a team"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Player Injuries",
+    "category": "Sports",
+    "description": "Returns a record of each player's injury on a team"
+  },
+  {
+    "name": "Hockey - DataFeeds by Rolling Insights.Player Season Statistics",
+    "category": "Sports",
+    "description": "Returns Player Season Statistics"
+  },
+  {
+    "name": "Betigolo Predictions.Sample predictions",
+    "category": "Sports",
+    "description": "Get a list of a sample of matches of the previous day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Baseball predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Futsal predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Handball predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Ice-Hockey predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Basketball predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Betigolo Predictions.Football predictions by day",
+    "category": "Sports",
+    "description": "Get a list of all matches for a specific day, including predictions for many markets."
+  },
+  {
+    "name": "Premier League Upcoming Matches./fixtures",
+    "category": "Sports",
+    "description": "When making a request to this API, it will return a JSON containing a list of upcoming matches in Premier League"
+  },
+  {
+    "name": "Premier League Upcoming Matches./competitions",
+    "category": "Sports",
+    "description": "This API will return an array of **5 biggest competitions** in which all clubs in* Premier League* are able to participate"
+  },
+  {
+    "name": "Premier League Upcoming Matches./clubs",
+    "category": "Sports",
+    "description": "This API will supply client info about all clubs that are playing the First Premier League Competition"
+  },
+  {
+    "name": "NFL Team Stats_v2.Get Team Receiving Data",
+    "category": "Sports",
+    "description": "Provides a JSON Response containg a list of all teams' receiving data. Parameters include whether you'd like the data for offense or defense sides, and a specific year.\n\nThe side parameter should be o"
+  },
+  {
+    "name": "NFL Team Stats_v2.Get Team Rushing Data",
+    "category": "Sports",
+    "description": "Provides a JSON Response containg a list of all teams' rushingdata. Parameters include whether you'd like the data for offense or defense sides, and a specific year.\n\nThe side parameter should be one "
+  },
+  {
+    "name": "NFL Team Stats_v2.Get Team Passing Data",
+    "category": "Sports",
+    "description": "Provides a JSON Response containg a list of all teams' passing data. Parameters include whether you'd like the data for offense or defense sides, and a specific year.\n\nThe side parameter should be one"
+  },
+  {
+    "name": "NFL Team Stats_v2.Get Team Win Data",
+    "category": "Sports",
+    "description": "Provides a JSON Response containg a list of all teams' win/loss data. Parameters include a specific year.\n\nThe year parameter should be a year between these years: 1920 - current year."
+  },
+  {
+    "name": "1977-2022 NBA Team Rosters and Schedules.Get All NBA Team Data from 1977-2022",
+    "category": "Sports",
+    "description": "Grabs all of the 30 NBA Franchise's Data from 1977-2022 into one object."
+  },
+  {
+    "name": "1977-2022 NBA Team Rosters and Schedules.Get NBA Franchise W/L Schedule for a Specific Year",
+    "category": "Sports",
+    "description": "Grabs NBA Franchise's W/L Schedule for a specific year"
+  },
+  {
+    "name": "1977-2022 NBA Team Rosters and Schedules.Get NBA Franchise's Specific Year Data",
+    "category": "Sports",
+    "description": "Grabs NBA Franchise's Roster and Schedule for a specific year"
+  },
+  {
+    "name": "1977-2022 NBA Team Rosters and Schedules.Get NBA Franchise Roster For a Specific Year",
+    "category": "Sports",
+    "description": "Grabs NBA Franchise's Roster for a specific year"
+  }
+]

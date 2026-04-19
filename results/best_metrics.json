@@ -1,0 +1,14 @@
+{
+  "best_proxy_loss": 0.14808333333333334,
+  "best_reward": 1.121875,
+  "best_epoch": 45,
+  "total_epochs": 50,
+  "final_epoch_data": {
+    "epoch": 50,
+    "proxy_loss": 0.2597291666666667,
+    "avg_reward": 0.944375,
+    "success_rate": 0.875,
+    "avg_steps": 2.0,
+    "timestamp": "2026-04-19T01:56:32.684978"
+  }
+}

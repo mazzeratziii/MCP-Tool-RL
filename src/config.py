@@ -1,9 +1,6 @@
-# config.py (исправленный)
 import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-from src.data.toolbench_loader import ToolBenchLoader
-from src.tools.tool_selector import ToolSelector
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,7 +8,6 @@ load_dotenv()
 
 @dataclass
 class NetworkConfig:
-    # ... (оставить как есть)
     base_latency_range: Tuple[float, float] = (0.05, 1.0)
     jitter_range: Tuple[float, float] = (0.01, 0.2)
     failure_rate_range: Tuple[float, float] = (0.01, 0.2)
@@ -25,40 +21,40 @@ class NetworkConfig:
 @dataclass
 class ToolBenchConfig:
     split: str = "train"
-    sample_size: Optional[int] = 50000
-    num_tools: int = 9000
+    sample_size: Optional[int] = 60000
+    num_tools: int = 10000
 
 
 @dataclass
 class RLConfig:
     algorithm: str = "grpo"
-    learning_rate: float = 2e-5
-    batch_size: int = 2
-    num_epochs: int = 20
+    learning_rate: float = 1e-5
+    batch_size: int = 8
+    num_epochs: int = 100
     max_steps: int = 3
-    kl_coef: float = 0.1
-    temperature: float = 0.7
+    kl_coef: float = 0.2
+    temperature: float = 0.8
     gradient_accumulation_steps: int = 2
+    weight_decay: float = 0.01
+    dropout: float = 0.1
 
 
 @dataclass
 class RewardConfig:
-    success_reward: float = 1.0
-    failure_penalty: float = -1.0
-    step_penalty: float = -0.1
+    success_reward: float = 3.0
+    failure_penalty: float = -0.2
+    step_penalty: float = -0.03
     invalid_call_penalty: float = -0.5
-    semantic_bonus: float = 0.2
-    latency_threshold: float = 0.5
-    wrong_tool_penalty: float = -0.3
-    extra_step_penalty: float = -0.15
+    semantic_bonus: float = 0.5
+    latency_threshold: float = 1.0
+    wrong_tool_penalty: float = -0.5
+    extra_step_penalty: float = -0.1
 
 
 class Config:
-    """Главный конфигурационный класс"""
-
     def __init__(self):
         print("\n" + "=" * 60)
-        print("ИНИЦИАЛИЗАЦИЯ КОНФИГУРАЦИИ")
+        print("INITIALIZING CONFIGURATION")
         print("=" * 60)
 
         self.network = NetworkConfig()
@@ -66,43 +62,67 @@ class Config:
         self.rl = RLConfig()
         self.reward = RewardConfig()
 
-        # ✅ Загружаем настройки модели из .env
-        self.model_name = os.getenv('MODEL_NAME')
-        self.openai_base_url = os.getenv('OPENAI_BASE_URL')
-        self.openai_api_token = os.getenv('OPENAI_API_TOKEN')
-        self.system_prompt = os.getenv('SYSTEM_PROMPT')
-        self.user_prompt = os.getenv('USER_PROMPT')
+        self.model_name = os.getenv('MODEL_NAME', 'Qwen/Qwen2.5-1.5B-Instruct')
+        self.openai_base_url = os.getenv('OPENAI_BASE_URL', '')
+        self.openai_api_token = os.getenv('OPENAI_API_TOKEN', '')
+        self.system_prompt = os.getenv('SYSTEM_PROMPT', 'You are a helpful AI assistant.')
+        self.user_prompt = os.getenv('USER_PROMPT', '')
         self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
-        self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '30.0'))
+        self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '60.0'))
 
-        # ✅ Валидация
+        self.tools = []  # Will be populated after loading
+        self.prompts = []  # Will be populated after loading
+        self.train_prompts = []
+        self.val_prompts = []
+        self.loader = None
+        self.tool_selector = None
+
         self._validate()
 
-        # Загружаем данные из ToolBench
-        print("\n📊 ЗАГРУЗКА ДАННЫХ ИЗ TOOLBENCH")
+        print(f"Configuration loaded:")
+        print(f"  Model: {self.model_name}")
+        print(f"  Base URL: {self.openai_base_url or 'local model'}")
+        print(f"  Learning rate: {self.rl.learning_rate}")
+        print(f"  Batch size: {self.rl.batch_size}")
+
+    def _validate(self):
+        if not self.model_name:
+            print("Warning: MODEL_NAME not set, using default")
+
+    def load_data(self):
+        """Load ToolBench data after configuration is ready"""
+        from src.data.toolbench_loader import ToolBenchLoader
+        from src.tools.tool_selector import ToolSelector
+
+        print("\n" + "=" * 60)
+        print("LOADING TOOLBENCH DATA")
+        print("=" * 60)
+
         self.loader = ToolBenchLoader(
             split=self.toolbench.split,
             sample_size=self.toolbench.sample_size
         )
 
-        # Создаем селектор инструментов
-        print("\n🎯 СОЗДАНИЕ СЕЛЕКТОРА ИНСТРУМЕНТОВ")
+        print("\n" + "=" * 60)
+        print("CREATING TOOL SELECTOR")
+        print("=" * 60)
+
         self.tool_selector = ToolSelector(self.loader.tools)
         self.tool_selector.print_category_stats()
 
-        # Выбираем инструменты для обучения
-        print(f"\n🔧 ВЫБОРКА {self.toolbench.num_tools} ИНСТРУМЕНТОВ ДЛЯ ОБУЧЕНИЯ")
-        selected_tools = []
+        print(f"\n" + "=" * 60)
+        print(f"SELECTING {self.toolbench.num_tools} TOOLS FOR TRAINING")
+        print("=" * 60)
 
-        # 1. Берем инструменты из каждой категории
+        selected_tools = []
         tools_per_category = max(5, self.toolbench.num_tools // 10)
+
         for category, data in self.tool_selector.CATEGORIES.items():
             if data['tools']:
                 category_tools = data['tools'][:tools_per_category]
                 selected_tools.extend(category_tools)
-                print(f"   {category}: взято {len(category_tools)} инструментов")
+                print(f"   {category}: selected {len(category_tools)} tools")
 
-        # 2. Если не хватает, добавляем популярные инструменты
         if len(selected_tools) < self.toolbench.num_tools:
             remaining = self.toolbench.num_tools - len(selected_tools)
             sorted_tools = sorted(
@@ -116,54 +136,47 @@ class Config:
                     remaining -= 1
                     if remaining == 0:
                         break
-            print(f"   добавлено {remaining} популярных инструментов")
+            print(f"   added {self.toolbench.num_tools - len(selected_tools) + remaining} popular tools")
 
         self.tools = selected_tools[:self.toolbench.num_tools]
-        print(f"\n✅ ИТОГО: {len(self.tools)} инструментов отобрано")
+        print(f"\nTotal: {len(self.tools)} tools selected")
 
-        # Распределение по категориям
         category_distribution = {}
         for tool in self.tools:
             cat = tool.get('category', 'Unknown')
             category_distribution[cat] = category_distribution.get(cat, 0) + 1
 
-        print("\n📊 РАСПРЕДЕЛЕНИЕ ПО КАТЕГОРИЯМ:")
+        print("\nCATEGORY DISTRIBUTION:")
         for cat, count in sorted(category_distribution.items(), key=lambda x: x[1], reverse=True)[:10]:
-            print(f"   {cat}: {count} инструментов")
+            print(f"   {cat}: {count} tools")
 
-        # Получаем промпты для обучения
-        print("\n📝 ПОДГОТОВКА ПРОМПТОВ ДЛЯ ОБУЧЕНИЯ")
-        self.prompts = self.loader.get_training_prompts()
+        print("\n" + "=" * 60)
+        print("PREPARING TRAINING PROMPTS")
+        print("=" * 60)
+
+        all_prompts = self.loader.get_training_prompts()
 
         valid_prompts = []
         tool_names = {t['name'] for t in self.tools}
 
-        for prompt in self.prompts:
+        for prompt in all_prompts:
             relevant = [t for t in prompt.get('relevant_tools', []) if t['name'] in tool_names]
             if relevant:
                 prompt['relevant_tools'] = relevant
                 valid_prompts.append(prompt)
 
-        self.prompts = valid_prompts
-        print(f"   Всего промптов: {len(self.prompts)}")
-        print(f"   Промптов с релевантными инструментами: {len(valid_prompts)}")
+        split_idx = int(len(valid_prompts) * 0.8)
+        self.train_prompts = valid_prompts[:split_idx]
+        self.val_prompts = valid_prompts[split_idx:]
+        self.prompts = self.train_prompts
+
+        print(f"   Total prompts: {len(valid_prompts)}")
+        print(f"   Train prompts: {len(self.train_prompts)}")
+        print(f"   Val prompts: {len(self.val_prompts)}")
 
         print("\n" + "=" * 60)
-        print("✅ КОНФИГУРАЦИЯ ЗАВЕРШЕНА")
+        print("CONFIGURATION COMPLETE")
         print("=" * 60)
-
-    def _validate(self):
-        """Проверка наличия обязательных параметров"""
-        if not self.openai_base_url:
-            raise ValueError("OPENAI_BASE_URL не установлен в .env файле")
-
-        print(f"✅ Конфигурация загружена:")
-        print(f"   Модель: {self.model_name}")
-        print(f"   Base URL: {self.openai_base_url}")
-        print(f"   Max concurrent: {self.max_concurrent_requests}")
 
     def get_tools_by_category(self, category: str) -> List[Dict]:
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]
-
-    def get_tools_for_query(self, query: str, num_tools: int = 20) -> List[Dict]:
-        return self.tool_selector.select_tools_for_query(query, num_tools)

@@ -1,4 +1,3 @@
-# src/llm/test_llm.py
 import sys
 import os
 
@@ -15,13 +14,13 @@ def test_llm():
 
     # Загружаем конфигурацию
     config = Config()
-    print(f"\n📋 Конфигурация:")
+    print(f"\n Конфигурация:")
     print(f"   Модель: {config.model_name}")
     print(f"   Base URL: {config.openai_base_url}")
 
     # Создаем клиент
     client = LLMClient(config)
-    print(f"✅ LLM клиент создан")
+    print(f" LLM клиент создан")
 
     # Тестовые вопросы
     test_questions = [
