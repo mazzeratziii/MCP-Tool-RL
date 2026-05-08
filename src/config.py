@@ -1,3 +1,4 @@
+# config.py
 import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
@@ -21,8 +22,8 @@ class NetworkConfig:
 @dataclass
 class ToolBenchConfig:
     split: str = "train"
-    sample_size: Optional[int] = 60000
-    num_tools: int = 10000
+    sample_size: Optional[int] = 80000
+    num_tools: int = 15000
 
 
 @dataclass
@@ -31,24 +32,24 @@ class RLConfig:
     learning_rate: float = 1e-5
     batch_size: int = 8
     num_epochs: int = 100
-    max_steps: int = 3
+    max_steps: int = 5
     kl_coef: float = 0.2
     temperature: float = 0.8
-    gradient_accumulation_steps: int = 2
+    gradient_accumulation_steps: int = 4
     weight_decay: float = 0.01
     dropout: float = 0.1
 
 
 @dataclass
 class RewardConfig:
-    success_reward: float = 3.0
-    failure_penalty: float = -0.2
-    step_penalty: float = -0.03
-    invalid_call_penalty: float = -0.5
+    success_reward: float = 5.0
+    failure_penalty: float = 0.0
+    step_penalty: float = -0.01
+    invalid_call_penalty: float = -0.1
     semantic_bonus: float = 0.5
     latency_threshold: float = 1.0
-    wrong_tool_penalty: float = -0.5
-    extra_step_penalty: float = -0.1
+    wrong_tool_penalty: float = -0.2
+    extra_step_penalty: float = -0.05
 
 
 class Config:
@@ -69,9 +70,10 @@ class Config:
         self.user_prompt = os.getenv('USER_PROMPT', '')
         self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
         self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '60.0'))
+        self.use_local_model = os.getenv('USE_LOCAL_MODEL', 'true').lower() == 'true'
 
-        self.tools = []  # Will be populated after loading
-        self.prompts = []  # Will be populated after loading
+        self.tools = []
+        self.prompts = []
         self.train_prompts = []
         self.val_prompts = []
         self.loader = None
@@ -84,13 +86,13 @@ class Config:
         print(f"  Base URL: {self.openai_base_url or 'local model'}")
         print(f"  Learning rate: {self.rl.learning_rate}")
         print(f"  Batch size: {self.rl.batch_size}")
+        print(f"  Use local model: {self.use_local_model}")
 
     def _validate(self):
         if not self.model_name:
             print("Warning: MODEL_NAME not set, using default")
 
     def load_data(self):
-        """Load ToolBench data after configuration is ready"""
         from src.data.toolbench_loader import ToolBenchLoader
         from src.tools.tool_selector import ToolSelector
 

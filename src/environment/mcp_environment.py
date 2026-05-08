@@ -1,16 +1,19 @@
+# src/environment/mcp_environment.py
 import time
 import random
 import json
 from typing import Dict, Any, Tuple, Optional
+
 from src.config import Config
-from .network_emulator import NetworkEmulator
+from .network_emulator import NetworkEmulator, NetworkMode
 from .tool_registry import ToolRegistry
 
 
 class MCPEnvironment:
-    def __init__(self, config: Config, llm_client=None):
+    def __init__(self, config: Config, llm_client=None, network_mode: NetworkMode = NetworkMode.DETERMINISTIC):
         self.config = config
-        self.network = NetworkEmulator(config)
+        self.network = NetworkEmulator(config, mode=network_mode)
+        self.llm_client = llm_client
 
         # Ensure data is loaded before creating ToolRegistry
         if not config.tools:
@@ -18,13 +21,20 @@ class MCPEnvironment:
             config.load_data()
 
         self.tools = ToolRegistry(config)
-        self.llm_client = llm_client
 
         self.current_query = None
         self.current_query_data = None
         self.relevant_tools = []
         self.step_count = 0
         self.used_tools = []
+
+    def set_network_mode(self, mode: NetworkMode):
+        """Переключение режима сети"""
+        self.network.set_mode(mode)
+
+    def get_network_stats(self) -> Dict[str, Any]:
+        """Получение статистики сети"""
+        return self.network.get_network_stats()
 
     def reset(self, query_data: Optional[Dict] = None):
         self.step_count = 0
@@ -43,6 +53,12 @@ class MCPEnvironment:
         return self._get_current_state()
 
     def _get_random_query(self) -> Dict:
+        if not self.config.tools:
+            return {
+                'query': 'What is the weather today?',
+                'domain': 'general',
+                'relevant_tools': []
+            }
         random_tool = random.choice(self.config.tools)
         return {
             'query': f"How to use {random_tool['name']}?",
@@ -82,6 +98,7 @@ class MCPEnvironment:
         }
 
     def step(self, action: str) -> Tuple[Dict[str, Any], float, bool, Dict]:
+        """Основной шаг окружения"""
         self.step_count += 1
         self.used_tools.append(action)
 
@@ -104,19 +121,18 @@ class MCPEnvironment:
             )
 
         latency = self.network.get_current_latency(tool['name'], {'base_latency': tool.get('base_latency', 0.1)})
-        time.sleep(latency * 0.01)
+        # time.sleep(latency * 0.01)  # закомментировано для ускорения обучения
 
         success = random.random() > tool.get('failure_rate', 0.1)
         is_relevant = any(rt['name'] == action for rt in self.relevant_tools)
 
         reward = self._calculate_reward(tool, latency, success, is_relevant)
-
         response = self._generate_response(tool, success, is_relevant)
 
         done = (
-                self.step_count >= self.config.rl.max_steps
-                or (success and is_relevant)
-                or len(self.used_tools) >= 3
+            self.step_count >= self.config.rl.max_steps
+            or (success and is_relevant)
+            or len(self.used_tools) >= 3
         )
 
         info = {
@@ -127,91 +143,108 @@ class MCPEnvironment:
             'tool_category': tool.get('category', 'general'),
             'step': self.step_count,
             'response': response,
-            'result': response
+            'result': response,
+            'semantic_score': self.tools.semantic_similarity(self.current_query, tool.get('name', ''))
         }
 
         return self._get_current_state(), reward, done, info
 
     def _generate_response(self, tool: Dict, success: bool, is_relevant: bool) -> str:
         if not success:
-            return f"Tool '{tool['name']}' could not process the request."
+            return f"Tool '{tool.get('name', 'unknown')}' could not process the request due to network or server error."
 
         if not is_relevant:
-            return f"Tool '{tool['name']}' is not suitable for this request."
+            return f"Tool '{tool.get('name', 'unknown')}' was called but is not the most suitable for this query."
 
         tool_info = {
             "name": tool.get('name', 'unknown'),
             "category": tool.get('category', 'general'),
             "description": tool.get('description', 'No description available'),
-            "parameters": tool.get('required_parameters', []),
+            "required_parameters": tool.get('required_parameters', []),
+            "optional_parameters": tool.get('optional_parameters', []),
             "examples": tool.get('examples', [])
         }
 
         if self.llm_client:
-            prompt = f"""You are an assistant answering user questions based on tool data.
+            try:
+                prompt = f"""You are a helpful assistant. Answer the user query using ONLY the information from this tool.
 
 User query: {self.current_query}
 
-Tool information from dataset:
-{json.dumps(tool_info, ensure_ascii=False, indent=2)}
+Tool Information:
+Name: {tool_info['name']}
+Category: {tool_info['category']}
+Description: {tool_info['description'][:200]}
 
 Rules:
-1. Do not invent data not present in the dataset
-2. Do not use external APIs
-3. If the dataset lacks specific data, state that honestly
-4. Use examples from the dataset to show how the tool works
-5. Provide a helpful response in the language of the query
+- Do not invent information.
+- Be concise and helpful."""
 
-Formulate a response for the user."""
-            try:
                 response = self.llm_client.ask(prompt)
-                return response
-            except Exception:
-                return self._fallback_response(tool_info)
+                if response and len(response.strip()) > 5:
+                    return response.strip()
+            except Exception as e:
+                print(f"[Warning] LLM generation failed: {e}")
 
+        # Fallback
         return self._fallback_response(tool_info)
 
     def _fallback_response(self, tool_info: Dict) -> str:
-        response_parts = [
+        """Безопасная версия ответа"""
+        lines = [
             f"Tool: {tool_info['name']}",
             f"Category: {tool_info['category']}",
-            f"Description: {tool_info['description']}"
+            f"Description: {tool_info['description'][:150]}..."
         ]
 
+        # Required parameters
+        req = tool_info.get('required_parameters', [])
+        if req:
+            param_names = [p.get('name', str(p)) if isinstance(p, dict) else str(p) for p in req[:5]]
+            if param_names:
+                lines.append(f"Required: {', '.join(param_names)}")
+
+        # Optional parameters
+        opt = tool_info.get('optional_parameters', [])
+        if opt:
+            param_names = [p.get('name', str(p)) if isinstance(p, dict) else str(p) for p in opt[:3]]
+            if param_names:
+                lines.append(f"Optional: {', '.join(param_names)}")
+
         if tool_info.get('examples'):
-            response_parts.append(f"Examples: {tool_info['examples'][:2]}")
+            lines.append(f"Example: {str(tool_info['examples'][0])[:100]}...")
 
-        if tool_info.get('parameters'):
-            params = ", ".join(tool_info['parameters'][:5])
-            response_parts.append(f"Parameters: {params}")
-
-        return ". ".join(response_parts)
+        return "\n".join(lines)
 
     def _calculate_reward(self, tool: Dict, latency: float, success: bool, is_relevant: bool) -> float:
+        """Улучшенная награда с акцентом на адаптацию к сети"""
         reward = 0.0
 
         if success and is_relevant:
-            reward += self.config.reward.success_reward
+            reward += 3.0
             if self.step_count == 1:
-                reward += 0.3
+                reward += 1.0  # Большой бонус за быстрое решение
         elif success and not is_relevant:
-            reward += 0.2
-            reward += self.config.reward.wrong_tool_penalty
-        elif not success and is_relevant:
-            reward += self.config.reward.failure_penalty * 0.5
+            reward += 0.4
         else:
-            reward += self.config.reward.failure_penalty
+            reward -= 1.8
 
-        if latency > self.config.reward.latency_threshold:
-            reward -= 0.2
+        # Штраф за высокую задержку
+        if latency > 0.6:
+            reward -= (latency - 0.6) * 0.8
 
-        reward += self.config.reward.step_penalty * self.step_count
+        # Штраф за количество шагов
+        reward -= 0.08 * self.step_count
 
-        semantic_score = self.tools.semantic_similarity(self.current_query, tool['name'])
-        if semantic_score > 0.7:
-            reward += self.config.reward.semantic_bonus
+        # Бонус за семантическую близость
+        semantic_score = self.tools.semantic_similarity(self.current_query, tool.get('name', ''))
+        if semantic_score > 0.75:
+            reward += 0.6
+        elif semantic_score > 0.6:
+            reward += 0.25
 
-        if self.used_tools.count(tool['name']) > 1:
-            reward += self.config.reward.extra_step_penalty
+        # Штраф за повторное использование инструмента
+        if self.used_tools.count(tool.get('name', '')) > 1:
+            reward -= 0.4
 
         return reward

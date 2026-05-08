@@ -1,3 +1,4 @@
+# src/llm/llm_client.py
 import torch
 from typing import List, Optional
 from src.config import Config
@@ -18,18 +19,9 @@ class LLMClient:
 
     def ask(self, question: str) -> str:
         if not self._use_local or self.local_model is None:
-            print("Warning: No local model available")
             return ""
 
         return self._ask_local(question)
-
-    def ask_batch(self, questions: List[str]) -> List[str]:
-        if not questions:
-            return []
-        if not self._use_local or self.local_model is None:
-            print("Warning: No local model available")
-            return [""] * len(questions)
-        return [self._ask_local(q) for q in questions]
 
     def _ask_local(self, question: str) -> str:
         if self.local_model is None or self.local_tokenizer is None:
@@ -52,7 +44,7 @@ class LLMClient:
             with torch.no_grad():
                 outputs = self.local_model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=256,
                     temperature=0.7,
                     do_sample=True,
                     pad_token_id=self.local_tokenizer.eos_token_id,

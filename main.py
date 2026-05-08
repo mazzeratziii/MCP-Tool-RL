@@ -1,27 +1,14 @@
+# main.py
 import os
 import sys
-import platform
-import ctypes
 import argparse
 import torch
 
-if platform.system() == "Windows":
-    try:
-        import importlib.util
-        torch_spec = importlib.util.find_spec("torch")
-        if torch_spec and torch_spec.origin:
-            torch_dir = os.path.dirname(torch_spec.origin)
-            dll_path = os.path.join(torch_dir, "lib", "c10.dll")
-            if os.path.exists(dll_path):
-                ctypes.CDLL(os.path.normpath(dll_path))
-    except Exception as e:
-        print(f"c10.dll preload failed: {e}")
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
 
 from src.config import Config
 from src.rl.train_grpo import NetMCPTrainer
-from src.llm.llm_client import LLMClient
+from src.environment.network_emulator import NetworkMode
 
 
 def main():
@@ -29,124 +16,164 @@ def main():
     parser.add_argument("--mode", type=str, default="train",
                         choices=["train", "evaluate", "interactive"])
     parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--network-mode", type=str, default="deterministic",
+                        choices=["deterministic", "controlled", "stochastic"])
     parser.add_argument("--checkpoint", type=str, default=None)
-
     args = parser.parse_args()
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
     config = Config()
+    config.load_data()
+
+    config.rl.batch_size = max(1, args.batch_size)
     config.rl.num_epochs = args.epochs
 
-    print(f"Configuration loaded for model: {config.model_name}")
+    network_mode_map = {
+        "deterministic": NetworkMode.DETERMINISTIC,
+        "controlled":    NetworkMode.CONTROLLED,
+        "stochastic":    NetworkMode.STOCHASTIC,
+    }
+    network_mode = network_mode_map[args.network_mode]
+
+    print(f"Mode={args.mode}  batch_size={config.rl.batch_size}  "
+          f"epochs={config.rl.num_epochs}  network={args.network_mode}")
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
 
     trainer = NetMCPTrainer(config)
 
-    if args.checkpoint:
-        checkpoint_path = args.checkpoint
-        if os.path.exists(checkpoint_path):
-            try:
-                trainer.load_checkpoint(checkpoint_path)
-                print(f"Checkpoint loaded from {checkpoint_path}")
-            except Exception as e:
-                print(f"Checkpoint loading error: {e}")
-        else:
-            print(f"Checkpoint {checkpoint_path} not found")
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        try:
+            trainer.load_checkpoint(args.checkpoint)
+        except Exception as e:
+            print(f"Checkpoint load error: {e}")
 
     if args.mode == "train":
         trainer.train()
     elif args.mode == "evaluate":
-        trainer.evaluate()
+        trainer.evaluate(network_mode=network_mode)
     elif args.mode == "interactive":
         run_interactive(trainer)
 
 
-def run_interactive(trainer):
+# ---------------------------------------------------------------------------
+# Interactive mode
+# ---------------------------------------------------------------------------
+
+def run_interactive(trainer: "NetMCPTrainer"):
     print("\n" + "=" * 60)
     print("NetMCP Interactive Mode")
     print("=" * 60)
-    print("Enter your query (or 'quit' to exit):")
-    print()
+    print("Commands:")
+    print("  /network deterministic | controlled | stochastic")
+    print("  /network stats")
+    print("  /help   /exit")
+    print("=" * 60)
+    print(f"Loaded {len(trainer.config.tools)} tools\n")
 
-    all_tools = trainer.config.tools
-    print(f"Loaded {len(all_tools)} tools\n")
+    network_mode_map = {
+        "deterministic": NetworkMode.DETERMINISTIC,
+        "controlled":    NetworkMode.CONTROLLED,
+        "stochastic":    NetworkMode.STOCHASTIC,
+    }
+
+    trainer.model.eval()
 
     while True:
-        query = input(">>> ")
-        if query.lower() in ['quit', 'exit', 'q']:
+        try:
+            query = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
             break
 
-        query_data = {
-            'query': query,
-            'domain': 'user_query',
-            'relevant_tools': []
-        }
+        if not query:
+            continue
 
+        if query.lower() in ("quit", "exit", "/exit"):
+            break
+
+        # ---- Commands ----
+        if query.startswith("/"):
+            parts = query[1:].split()
+            cmd = parts[0].lower() if parts else ""
+
+            if cmd == "help":
+                print("\n/network deterministic | controlled | stochastic — switch mode")
+                print("/network stats — show current stats")
+                print("/exit — quit\n")
+
+            elif cmd == "network" and len(parts) > 1:
+                sub = parts[1].lower()
+                if sub == "stats":
+                    stats = trainer.env.get_network_stats()
+                    for k, v in stats.items():
+                        print(f"  {k}: {v}")
+                    print()
+                elif sub in network_mode_map:
+                    trainer.env.set_network_mode(network_mode_map[sub])
+                    print(f"Network mode → {sub}")
+                else:
+                    print(f"Unknown sub-command: {sub}")
+            else:
+                print(f"Unknown command: {cmd}. Type /help.")
+            continue
+
+        # ---- Query ----
+        query_data = {"query": query, "domain": "user_query", "relevant_tools": []}
         state = trainer.env.reset(query_data)
-        print(f"\nProcessing query: {query}")
+
+        print(f"\nProcessing: {query}")
         print("-" * 50)
 
-        valid_tools = [t['name'] for t in state['tools'] if t['available']]
-        if not valid_tools:
-            print("   No available tools for this query")
+        available = [t["name"] for t in state["tools"] if t.get("available", True)]
+        if not available:
+            print("No available tools for this query.")
             print("-" * 50)
             continue
 
-        response_text = None
-        tool_used = None
-        latency = 0
+        resolved = False
+        import torch
 
-        for step in range(trainer.config.rl.max_steps):
-            context = trainer._format_context(state)
-            response = trainer.llm_client.ask(context)
-            tool_call = trainer._parse_tool_call(response)
+        with torch.no_grad():
+            for step in range(trainer.config.rl.max_steps):
+                context = trainer._format_context(state)
+                tools = [t["name"] for t in state["tools"]]
 
-            if tool_call:
-                tool_name = tool_call['tool']
+                logits, _ = trainer._forward(context, tools)
 
-                if tool_name == 'tool_name' or tool_name not in valid_tools:
-                    corrected = trainer._correct_tool_call(tool_name, valid_tools, query)
-                    if corrected:
-                        tool_name = corrected
-                    else:
-                        continue
+                # Greedy decode in interactive mode
+                action_idx = logits.argmax().item()
+                tool_name = tools[action_idx]
 
-                next_state, reward, done, info = trainer.env.step(tool_name)
-                latency = info.get('latency', 0)
+                if tool_name not in available:
+                    print(f"  Step {step+1}: {tool_name} not available, skipping")
+                    continue
 
-                if info.get('success'):
-                    response_text = info.get('response') or info.get('result')
-                    tool_used = tool_name
+                next_state, _, done, info = trainer.env.step(tool_name)
 
-                    if not response_text:
-                        response_text = f"Request processed via tool '{tool_name}'"
-
+                if info.get("success"):
+                    response = info.get("response") or info.get("result", "")
                     print(f"\nRESPONSE:")
-                    print(f"{response_text}")
-                    print(f"\nDetails:")
-                    print(f"  Tool: {tool_name}")
-                    print(f"  Time: {latency:.3f} sec")
+                    print(response or f"Request handled by '{tool_name}'")
+                    print(f"\n  Tool:    {tool_name}")
+                    print(f"  Latency: {info.get('latency', 0):.3f}s")
+                    resolved = True
                     break
                 else:
-                    print(f"  Tool '{tool_name}' could not process the request")
+                    print(f"  Step {step+1}: {tool_name} failed — trying next")
+                    state = next_state
+                    if done:
+                        break
 
-                    if step < trainer.config.rl.max_steps - 1:
-                        print(f"  Trying another tool...")
-                        state = next_state
-                    else:
-                        print(f"\nFAILED TO PROCESS REQUEST")
-                        print(f"  Please rephrase your query")
-            else:
-                if response and len(response) > 10 and '<tool_call>' not in response:
-                    print(f"\nMODEL RESPONSE:")
-                    print(f"{response}")
-                else:
-                    print(f"  Model could not respond to the query")
-                break
-
-        if response_text is None and step == trainer.config.rl.max_steps - 1:
-            print(f"\nFAILED TO PROCESS REQUEST")
-            print(f"  Please rephrase your query")
-
-        print("-" * 50)
+        if not resolved:
+            print("\nCould not resolve query with available tools.")
+        print("-" * 50 + "\n")
 
 
 if __name__ == "__main__":
