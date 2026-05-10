@@ -12,26 +12,41 @@ from src.environment.network_emulator import NetworkMode
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NetMCP RL Training")
-    parser.add_argument("--mode", type=str, default="train",
+    parser = argparse.ArgumentParser(description="NetMCP-RL")
+    parser.add_argument("--mode", default="train",
                         choices=["train", "evaluate", "interactive"])
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--network-mode", type=str, default="deterministic",
+    parser.add_argument("--epochs",       type=int,   default=30)
+    parser.add_argument("--batch-size",   type=int,   default=8)
+    parser.add_argument("--network-mode", default="deterministic",
                         choices=["deterministic", "controlled", "stochastic"])
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--checkpoint",   default=None)
+    parser.add_argument("--profile",      default=None,
+                        choices=["desktop", "laptop"],
+                        help="Hardware profile. Auto-detected if omitted.")
+    parser.add_argument("--eval-episodes", type=int, default=200,
+                        help="Number of episodes for evaluate mode")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     config = Config()
     config.load_data()
+    config.rl.batch_size  = max(1, args.batch_size)
+    config.rl.num_epochs  = args.epochs
 
-    config.rl.batch_size = max(1, args.batch_size)
-    config.rl.num_epochs = args.epochs
+    # ── Profile auto-detection ────────────────────────────────────────
+    if args.profile:
+        config.profile = args.profile
+    elif torch.cuda.is_available():
+        vram_mb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 2
+        config.profile = "desktop" if vram_mb >= 7000 else "laptop"
+        print(f"Auto-detected profile: {config.profile} ({vram_mb} MB VRAM)")
+    else:
+        config.profile = "laptop"
 
     network_mode_map = {
         "deterministic": NetworkMode.DETERMINISTIC,
@@ -39,9 +54,6 @@ def main():
         "stochastic":    NetworkMode.STOCHASTIC,
     }
     network_mode = network_mode_map[args.network_mode]
-
-    print(f"Mode={args.mode}  batch_size={config.rl.batch_size}  "
-          f"epochs={config.rl.num_epochs}  network={args.network_mode}")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -58,14 +70,12 @@ def main():
     if args.mode == "train":
         trainer.train()
     elif args.mode == "evaluate":
-        trainer.evaluate(network_mode=network_mode)
+        trainer.evaluate(num_episodes=args.eval_episodes, network_mode=network_mode)
     elif args.mode == "interactive":
         run_interactive(trainer)
 
 
-# ---------------------------------------------------------------------------
-# Interactive mode
-# ---------------------------------------------------------------------------
+# ── Interactive mode ──────────────────────────────────────────────────────────
 
 def run_interactive(trainer: "NetMCPTrainer"):
     print("\n" + "=" * 60)
@@ -74,105 +84,93 @@ def run_interactive(trainer: "NetMCPTrainer"):
     print("Commands:")
     print("  /network deterministic | controlled | stochastic")
     print("  /network stats")
+    print("  /eval N   — quick eval on N val prompts")
     print("  /help   /exit")
     print("=" * 60)
-    print(f"Loaded {len(trainer.config.tools)} tools\n")
+    print(f"Profile: {trainer.p.name}")
+    print(f"Tools:   {len(trainer.config.tools)}\n")
 
-    network_mode_map = {
+    nm_map = {
         "deterministic": NetworkMode.DETERMINISTIC,
         "controlled":    NetworkMode.CONTROLLED,
         "stochastic":    NetworkMode.STOCHASTIC,
     }
 
     trainer.model.eval()
-
     while True:
         try:
             query = input(">>> ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-
         if not query:
             continue
-
-        if query.lower() in ("quit", "exit", "/exit"):
+        if query.lower() in ("exit", "quit", "/exit"):
             break
 
-        # ---- Commands ----
+        # Commands
         if query.startswith("/"):
             parts = query[1:].split()
-            cmd = parts[0].lower() if parts else ""
+            cmd   = parts[0].lower() if parts else ""
 
             if cmd == "help":
-                print("\n/network deterministic | controlled | stochastic — switch mode")
-                print("/network stats — show current stats")
-                print("/exit — quit\n")
+                print("  /network [deterministic|controlled|stochastic|stats]")
+                print("  /eval N   — evaluate on N val prompts")
+                print("  /exit")
 
             elif cmd == "network" and len(parts) > 1:
                 sub = parts[1].lower()
                 if sub == "stats":
-                    stats = trainer.env.get_network_stats()
-                    for k, v in stats.items():
+                    s = trainer.env.get_network_stats()
+                    for k, v in s.items():
                         print(f"  {k}: {v}")
-                    print()
-                elif sub in network_mode_map:
-                    trainer.env.set_network_mode(network_mode_map[sub])
-                    print(f"Network mode → {sub}")
+                elif sub in nm_map:
+                    trainer.env.set_network_mode(nm_map[sub])
+                    print(f"Network → {sub}")
                 else:
-                    print(f"Unknown sub-command: {sub}")
+                    print(f"Unknown: {sub}")
+
+            elif cmd == "eval":
+                n = int(parts[1]) if len(parts) > 1 else 50
+                trainer.evaluate(num_episodes=n,
+                                 network_mode=trainer.env.network.mode)
+
             else:
-                print(f"Unknown command: {cmd}. Type /help.")
+                print(f"Unknown command: {cmd}")
             continue
 
-        # ---- Query ----
+        # Regular query
         query_data = {"query": query, "domain": "user_query", "relevant_tools": []}
-        state = trainer.env.reset(query_data)
-
-        print(f"\nProcessing: {query}")
+        state, tools, scores = trainer._get_tools_state(query_data)
+        print(f"\nTop tools for: '{query}'")
         print("-" * 50)
 
-        available = [t["name"] for t in state["tools"] if t.get("available", True)]
-        if not available:
-            print("No available tools for this query.")
-            print("-" * 50)
-            continue
-
-        resolved = False
         import torch
+        with torch.inference_mode():
+            ids    = trainer._encode_context(state)
+            embs   = trainer._build_tool_embs(tools)
+            logits = trainer._forward_with_embs(ids, embs, scores)
+            probs  = torch.softmax(logits, dim=-1)
 
-        with torch.no_grad():
-            for step in range(trainer.config.rl.max_steps):
-                context = trainer._format_context(state)
-                tools = [t["name"] for t in state["tools"]]
+        # Show top-5
+        top5 = probs.topk(min(5, len(tools)))
+        for rank, (prob, idx) in enumerate(
+            zip(top5.values.tolist(), top5.indices.tolist()), 1
+        ):
+            tool = tools[idx]
+            sem  = scores[idx]
+            print(f"  {rank}. {tool}")
+            print(f"     model_prob={prob:.3f}  semantic={sem:.3f}")
 
-                logits, _ = trainer._forward(context, tools)
-
-                # Greedy decode in interactive mode
-                action_idx = logits.argmax().item()
-                tool_name = tools[action_idx]
-
-                if tool_name not in available:
-                    print(f"  Step {step+1}: {tool_name} not available, skipping")
-                    continue
-
-                next_state, _, done, info = trainer.env.step(tool_name)
-
-                if info.get("success"):
-                    response = info.get("response") or info.get("result", "")
-                    print(f"\nRESPONSE:")
-                    print(response or f"Request handled by '{tool_name}'")
-                    print(f"\n  Tool:    {tool_name}")
-                    print(f"  Latency: {info.get('latency', 0):.3f}s")
-                    resolved = True
-                    break
-                else:
-                    print(f"  Step {step+1}: {tool_name} failed — trying next")
-                    state = next_state
-                    if done:
-                        break
-
-        if not resolved:
-            print("\nCould not resolve query with available tools.")
+        # Execute top-1
+        best_tool = tools[logits.argmax().item()]
+        trainer.env.reset(query_data)
+        _, _, _, info = trainer.env.step(best_tool)
+        print(f"\nExecuted: {best_tool}")
+        print(f"Success:  {info.get('success', False)}")
+        print(f"Latency:  {info.get('latency', 0):.3f}s")
+        resp = info.get("response") or info.get("result", "")
+        if resp:
+            print(f"Response: {resp[:200]}")
         print("-" * 50 + "\n")
 
 
