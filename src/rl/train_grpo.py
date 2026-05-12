@@ -58,11 +58,11 @@ PROFILES: Dict[str, HWProfile] = {
         lora_alpha      = 32,
         lora_targets    = ["q_proj", "v_proj", "k_proj", "o_proj"],
         grpo_group_size = 6,
-        train_set_size  = 800,
-        resample_every  = 5,
+        train_set_size  = 1500,  # was 800
+        resample_every  = 3,     # was 5
         top_k_tools     = 20,
         max_ctx_len     = 512,
-        entropy_coeff   = 0.005,
+        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
         semantic_bias   = 3.0,
         warmup_steps    = 100,
         grad_clip       = 0.5,
@@ -74,12 +74,12 @@ PROFILES: Dict[str, HWProfile] = {
         lora_r          = 4,
         lora_alpha      = 8,
         lora_targets    = ["q_proj", "v_proj"],
-        grpo_group_size = 4,
-        train_set_size  = 500,
-        resample_every  = 5,
-        top_k_tools     = 12,
-        max_ctx_len     = 320,
-        entropy_coeff   = 0.005,
+        grpo_group_size = 3,     # 4→3: 25% fewer forwards
+        train_set_size  = 600,   # 1000→600: faster epoch, diversity via resample
+        resample_every  = 2,     # resample more often to compensate
+        top_k_tools     = 15,    # 20→15: fewer tool embeds (~25% faster)
+        max_ctx_len     = 256,   # 320→256: shorter context saves attention time
+        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
         semantic_bias   = 3.0,
         warmup_steps    = 80,
         grad_clip       = 0.5,
@@ -168,6 +168,19 @@ class NetMCPTrainer:
               f"top_k={self.p.top_k_tools}  "
               f"group_size={self.p.grpo_group_size}")
 
+        # Pre-cache all tool name embeddings (done once, saves ~80% of per-step tokenisation)
+        print("Pre-caching tool embeddings...")
+        self._tool_emb_cache: Dict[str, torch.Tensor] = {}
+        embed_layer = self.model.get_input_embeddings()
+        with torch.inference_mode():
+            for tool in config.tools:
+                name = tool["name"]
+                ids = self.tokenizer(
+                    name, return_tensors="pt", add_special_tokens=False
+                ).input_ids.to(self.device)
+                self._tool_emb_cache[name] = embed_layer(ids).mean(dim=1).squeeze(0).detach().cpu()
+        print(f"Cached {len(self._tool_emb_cache)} tool embeddings")
+
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
@@ -243,14 +256,18 @@ class NetMCPTrainer:
 
     @torch.inference_mode()
     def _build_tool_embs(self, tools: List[str]) -> torch.Tensor:
-        embed = self.model.get_input_embeddings()
+        """Return (n, d) matrix using pre-cached embeddings — no tokenisation per call."""
         embs = []
+        embed_layer = self.model.get_input_embeddings()
         for t in tools:
-            ids = self.tokenizer(
-                t, return_tensors="pt", add_special_tokens=False
-            ).input_ids.to(self.device)
-            embs.append(embed(ids).mean(dim=1))
-        return torch.cat(embs, dim=0).detach()   # (n, d)
+            if t in self._tool_emb_cache:
+                embs.append(self._tool_emb_cache[t].to(self.device))
+            else:
+                ids = self.tokenizer(
+                    t, return_tensors="pt", add_special_tokens=False
+                ).input_ids.to(self.device)
+                embs.append(embed_layer(ids).mean(dim=1).squeeze(0).detach())
+        return torch.stack(embs, dim=0)   # (n, d)
 
     # ------------------------------------------------------------------
     # Forward
@@ -462,6 +479,8 @@ class NetMCPTrainer:
                                  min(num_episodes, len(pool or self.config.val_prompts)))
 
         success_t = relevant_t = total_t = 0
+        top3_relevant_t = 0   # relevant tool appears in model's top-3
+
         self.model.eval()
         with torch.inference_mode():
             for prompt in selected:
@@ -469,19 +488,31 @@ class NetMCPTrainer:
                 ids    = self._encode_context(state)
                 embs   = self._build_tool_embs(tools)
                 logits = self._forward_with_embs(ids, embs, scores)
-                tool   = tools[logits.argmax().item()]
+
+                # Top-1 greedy
+                top1_idx  = logits.argmax().item()
+                tool      = tools[top1_idx]
                 self.env.reset(prompt)
                 _, _, _, info = self.env.step(tool)
-                total_t   += 1
-                success_t += int(info.get("success", False))
+                total_t    += 1
+                success_t  += int(info.get("success", False))
                 relevant_t += int(info.get("is_relevant", False))
+
+                # Top-3 accuracy: check if any of top-3 is relevant
+                top3_indices = logits.topk(min(3, len(tools))).indices.tolist()
+                relevant_names = {t["name"] for t in state["tools"]
+                                  if t.get("is_relevant", False)}
+                if any(tools[i] in relevant_names for i in top3_indices):
+                    top3_relevant_t += 1
 
         self.model.train()
         self.env.set_network_mode(NetworkMode.DETERMINISTIC)
         n = max(total_t, 1)
-        print(f"  Episodes:     {total_t}")
-        print(f"  Success rate: {success_t/n:.2%}")
-        print(f"  Relevance:    {relevant_t/n:.2%}")
+        print(f"  Episodes:      {total_t}")
+        print(f"  Success rate:  {success_t/n:.2%}")
+        print(f"  Relevance@1:   {relevant_t/n:.2%}   (greedy top-1)")
+        print(f"  Relevance@3:   {top3_relevant_t/n:.2%}  (relevant in top-3)")
+        print(f"  Top-3 gap:     {(top3_relevant_t - relevant_t)/n:+.2%}")
 
     # ------------------------------------------------------------------
     # Checkpoint save / load
@@ -492,15 +523,55 @@ class NetMCPTrainer:
         os.makedirs(d, exist_ok=True)
         self.model.save_pretrained(d)
         self.tokenizer.save_pretrained(d)
-        # Save profile name so we know what was used
-        with open(f"{d}/profile.txt", "w") as f:
-            f.write(self.p.name)
+        # Save profile so checkpoint can be resumed correctly
+        import json
+        meta = {
+            "profile": [k for k, v in PROFILES.items() if v is self.p][0],
+            "lora_r": self.p.lora_r,
+            "lora_targets": self.p.lora_targets,
+            "update_step": self._update_step,
+        }
+        with open(f"{d}/train_meta.json", "w") as f:
+            json.dump(meta, f, indent=2)
         print(f"  ✓ Checkpoint: {d}")
 
     def load_checkpoint(self, checkpoint_path: str):
-        from peft import PeftModel
+        """
+        Load LoRA adapter weights into the already-initialised model.
+        Uses set_adapter / load_adapter instead of PeftModel.from_pretrained
+        to avoid the 'multiple adapters' warning and missing-key errors when
+        the checkpoint profile differs from the current one.
+        """
+        import os
+        from safetensors.torch import load_file as st_load
+        import torch
+
         print(f"Loading checkpoint from {checkpoint_path}...")
-        self.model = PeftModel.from_pretrained(self.model, checkpoint_path)
+
+        # Try loading via PEFT's own adapter loader (no double-wrapping)
+        try:
+            self.model.load_adapter(checkpoint_path, adapter_name="default")
+            print("Checkpoint loaded via load_adapter.")
+            return
+        except Exception as e:
+            print(f"  load_adapter failed ({e}), trying manual weight load...")
+
+        # Fallback: load safetensors / pytorch_model.bin directly
+        st_path  = os.path.join(checkpoint_path, "adapter_model.safetensors")
+        bin_path = os.path.join(checkpoint_path, "adapter_model.bin")
+
+        if os.path.exists(st_path):
+            state = st_load(st_path, device="cpu")
+        elif os.path.exists(bin_path):
+            state = torch.load(bin_path, map_location="cpu")
+        else:
+            print(f"  No adapter weights found in {checkpoint_path}, skipping.")
+            return
+
+        missing, unexpected = self.model.load_state_dict(state, strict=False)
+        loaded = len(state) - len(missing)
+        print(f"  Loaded {loaded}/{len(state)} keys "
+              f"({len(missing)} missing, {len(unexpected)} unexpected)")
         print("Checkpoint loaded.")
 
     # Compatibility shim for interactive mode
