@@ -63,14 +63,14 @@ class Config:
         self.rl = RLConfig()
         self.reward = RewardConfig()
 
-        self.model_name = os.getenv('MODEL_NAME', 'Qwen/Qwen2.5-1.5B-Instruct')
-        self.openai_base_url = os.getenv('OPENAI_BASE_URL', '')
-        self.openai_api_token = os.getenv('OPENAI_API_TOKEN', '')
+        self.model_name = os.getenv('MODEL_NAME', '')
+        self.openai_base_url = os.getenv('BASE_URL', '')
+        self.openai_api_token = os.getenv('API_TOKEN', '')
         self.system_prompt = os.getenv('SYSTEM_PROMPT', 'You are a helpful AI assistant.')
         self.user_prompt = os.getenv('USER_PROMPT', '')
         self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
         self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '60.0'))
-        self.use_local_model = os.getenv('USE_LOCAL_MODEL', 'true').lower() == 'true'
+        #self.use_local_model = os.getenv('USE_LOCAL_MODEL', 'true').lower() == 'true'
 
         self.tools = []
         self.prompts = []
@@ -86,7 +86,7 @@ class Config:
         print(f"  Base URL: {self.openai_base_url or 'local model'}")
         print(f"  Learning rate: {self.rl.learning_rate}")
         print(f"  Batch size: {self.rl.batch_size}")
-        print(f"  Use local model: {self.use_local_model}")
+        #print(f"  Use local model: {self.use_local_model}")
 
     def _validate(self):
         if not self.model_name:
@@ -96,9 +96,9 @@ class Config:
         from src.data.toolbench_loader import ToolBenchLoader
         from src.tools.tool_selector import ToolSelector
 
-        print("\n" + "=" * 60)
+        print("\n" + "-" * 30)
         print("LOADING TOOLBENCH DATA")
-        print("=" * 60)
+        print("-" * 30)
 
         self.loader = ToolBenchLoader(
             split=self.toolbench.split,
@@ -175,10 +175,6 @@ class Config:
         print(f"   Total prompts: {len(valid_prompts)}")
         print(f"   Train prompts: {len(self.train_prompts)}")
         print(f"   Val prompts: {len(self.val_prompts)}")
-
-        print("\n" + "=" * 60)
-        print("CONFIGURATION COMPLETE")
-        print("=" * 60)
 
     def get_tools_by_category(self, category: str) -> List[Dict]:
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]

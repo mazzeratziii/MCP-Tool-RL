@@ -50,6 +50,7 @@ class HWProfile:
     grad_clip: float
     use_double_quant: bool
     compute_dtype: torch.dtype
+    sample_temperature: float = 1.0  # exploration temperature during collection
 
 PROFILES: Dict[str, HWProfile] = {
     "desktop": HWProfile(
@@ -85,6 +86,7 @@ PROFILES: Dict[str, HWProfile] = {
         grad_clip       = 0.5,
         use_double_quant= True,
         compute_dtype   = torch.float16,
+        sample_temperature = 1.2,
     ),
 }
 
@@ -304,6 +306,12 @@ class NetMCPTrainer:
                 probs = F.softmax(logits, dim=-1)
                 probs = torch.nan_to_num(probs, nan=1e-8)
                 probs = probs / (probs.sum() + 1e-8)
+                # Apply temperature — higher = more exploration, fewer skipped groups
+                if self.p.sample_temperature != 1.0:
+                    logits_t = (logits / self.p.sample_temperature)
+                    probs = torch.softmax(logits_t, dim=-1)
+                    probs = torch.nan_to_num(probs, nan=1e-8)
+                    probs = probs / (probs.sum() + 1e-8)
                 dist = torch.distributions.Categorical(probs)
                 idx = dist.sample()
 
