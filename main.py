@@ -1,157 +1,192 @@
 # main.py
 import os
 import sys
-import platform
-import ctypes
 import argparse
 import torch
 
-# Решение для Windows: принудительно загружаем c10.dll до остальных импортов
-if platform.system() == "Windows":
-    try:
-        import importlib.util
-
-        torch_spec = importlib.util.find_spec("torch")
-        if torch_spec and torch_spec.origin:
-            torch_dir = os.path.dirname(torch_spec.origin)
-            dll_path = os.path.join(torch_dir, "lib", "c10.dll")
-            if os.path.exists(dll_path):
-                ctypes.CDLL(os.path.normpath(dll_path))
-                print("✅ c10.dll успешно предварительно загружен")
-    except Exception as e:
-        print(f"⚠️ Предзагрузка c10.dll не удалась: {e}")
-
-# Добавляем путь к src в системный путь
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
 
 from src.config import Config
 from src.rl.train_grpo import NetMCPTrainer
+from src.environment.network_emulator import NetworkMode
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NetMCP RL Training")
-    parser.add_argument("--mode", type=str, default="train",
+    parser = argparse.ArgumentParser(description="NetMCP-RL")
+    parser.add_argument("--mode", default="train",
                         choices=["train", "evaluate", "interactive"])
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to checkpoint to load (e.g., checkpoints/epoch_20)")
-
+    parser.add_argument("--epochs",       type=int,   default=30)
+    parser.add_argument("--batch-size",   type=int,   default=8)
+    parser.add_argument("--network-mode", default="deterministic",
+                        choices=["deterministic", "controlled", "stochastic"])
+    parser.add_argument("--checkpoint",   default=None)
+    parser.add_argument("--profile",      default=None,
+                        choices=["desktop", "laptop"],
+                        help="Hardware profile. Auto-detected if omitted.")
+    parser.add_argument("--eval-episodes", type=int, default=200,
+                        help="Number of episodes for evaluate mode")
+    parser.add_argument("--use-hybrid", action="store_true",
+                        help="Use hybrid mode: real MCP calls + emulation")
+    parser.add_argument("--mcp-config", default="mcp_config.json",
+                        help="Path to MCP configuration file")
     args = parser.parse_args()
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     config = Config()
-    config.rl.num_epochs = args.epochs
-    config.model_name = args.model
+    config.load_data()
+    config.rl.batch_size  = max(1, args.batch_size)
+    config.rl.num_epochs  = args.epochs
 
-    trainer = NetMCPTrainer(config)
+    # ── Profile auto-detection ────────────────────────────────────────
+    if args.profile:
+        config.profile = args.profile
+    elif torch.cuda.is_available():
+        vram_mb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 2
+        config.profile = "desktop" if vram_mb >= 7000 else "laptop"
+        print(f"Auto-detected profile: {config.profile} ({vram_mb} MB VRAM)")
+    else:
+        config.profile = "laptop"
 
-    # Загружаем чекпоинт если указан
-    if args.checkpoint:
-        checkpoint_path = args.checkpoint
-        if os.path.exists(checkpoint_path):
-            try:
-                trainer.load_checkpoint(checkpoint_path)
-                print(f"✅ Загружен чекпоинт из {checkpoint_path}")
-            except Exception as e:
-                print(f"⚠️ Ошибка загрузки чекпоинта: {e}")
-        else:
-            print(f"⚠️ Чекпоинт {checkpoint_path} не найден")
+    network_mode_map = {
+        "deterministic": NetworkMode.DETERMINISTIC,
+        "controlled":    NetworkMode.CONTROLLED,
+        "stochastic":    NetworkMode.STOCHASTIC,
+    }
+    network_mode = network_mode_map[args.network_mode]
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+    # ── Выбор режима: гибридный или эмуляция ──────────────────────────
+    if args.use_hybrid:
+        print("\n" + "=" * 60)
+        print("HYBRID MODE: Real MCP + Emulation")
+        print("=" * 60)
+        from src.rl.train_grpo_hybrid import HybridMCPTrainer
+        trainer = HybridMCPTrainer(config, mcp_config_path=args.mcp_config)
+    else:
+        print("\n" + "=" * 60)
+        print("EMULATION MODE: All tools emulated")
+        print("=" * 60)
+        trainer = NetMCPTrainer(config)
+
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        try:
+            trainer.load_checkpoint(args.checkpoint)
+        except Exception as e:
+            print(f"Checkpoint load error: {e}")
 
     if args.mode == "train":
         trainer.train()
     elif args.mode == "evaluate":
-        trainer.evaluate()
+        trainer.evaluate(num_episodes=args.eval_episodes, network_mode=network_mode)
     elif args.mode == "interactive":
         run_interactive(trainer)
 
 
-def run_interactive(trainer):
-    """Интерактивный режим для тестирования с исправлением вызовов"""
-    print("\n=== NetMCP Interactive Mode ===")
-    print("Введите ваш запрос (или 'quit' для выхода):")
+# ── Interactive mode ──────────────────────────────────────────────────────────
 
-    # Получаем список всех доступных инструментов
-    all_tools = trainer.config.tools
-    print(f"\n📚 Загружено {len(all_tools)} инструментов")
+def run_interactive(trainer: "NetMCPTrainer"):
+    print("\n" + "=" * 60)
+    print("NetMCP Interactive Mode")
+    print("=" * 60)
+    print("Commands:")
+    print("  /network deterministic | controlled | stochastic")
+    print("  /network stats")
+    print("  /eval N   — quick eval on N val prompts")
+    print("  /help   /exit")
+    print("=" * 60)
+    print(f"Profile: {trainer.p.name}")
+    print(f"Tools:   {len(trainer.config.tools)}\n")
 
-    # Покажем первые несколько инструментов для примера
-    print("\n📋 Примеры доступных инструментов:")
-    for i, tool in enumerate(all_tools[:10]):
-        print(f"   {i + 1}. {tool['name']}")
+    nm_map = {
+        "deterministic": NetworkMode.DETERMINISTIC,
+        "controlled":    NetworkMode.CONTROLLED,
+        "stochastic":    NetworkMode.STOCHASTIC,
+    }
 
+    trainer.model.eval()
     while True:
-        query = input("\n>>> ")
-        if query.lower() in ['quit', 'exit', 'q']:
+        try:
+            query = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not query:
+            continue
+        if query.lower() in ("exit", "quit", "/exit"):
             break
 
-        query_data = {
-            'query': query,
-            'domain': 'user_query',
-            'relevant_tools': []
-        }
+        # Commands
+        if query.startswith("/"):
+            parts = query[1:].split()
+            cmd   = parts[0].lower() if parts else ""
 
-        state = trainer.env.reset(query_data)
-        print(f"\nОбработка запроса: {query}")
+            if cmd == "help":
+                print("  /network [deterministic|controlled|stochastic|stats]")
+                print("  /eval N   — evaluate on N val prompts")
+                print("  /exit")
 
-        # Получаем валидные инструменты
-        valid_tools = [t['name'] for t in state['tools'] if t['available']]
-        if not valid_tools:
-            print("  ⚠️ Нет доступных инструментов для этого запроса")
+            elif cmd == "network" and len(parts) > 1:
+                sub = parts[1].lower()
+                if sub == "stats":
+                    s = trainer.env.get_network_stats()
+                    for k, v in s.items():
+                        print(f"  {k}: {v}")
+                elif sub in nm_map:
+                    trainer.env.set_network_mode(nm_map[sub])
+                    print(f"Network → {sub}")
+                else:
+                    print(f"Unknown: {sub}")
+
+            elif cmd == "eval":
+                n = int(parts[1]) if len(parts) > 1 else 50
+                trainer.evaluate(num_episodes=n,
+                                 network_mode=trainer.env.network.mode)
+
+            else:
+                print(f"Unknown command: {cmd}")
             continue
 
-        print(f"  📋 Доступно инструментов: {len(valid_tools)}")
-        print(f"  📋 Первые 5 доступных инструментов:")
-        for i, tool in enumerate(valid_tools[:5]):
-            print(f"     {i + 1}. {tool}")
+        # Regular query
+        query_data = {"query": query, "domain": "user_query", "relevant_tools": []}
+        state, tools, scores = trainer._get_tools_state(query_data)
+        print(f"\nTop tools for: '{query}'")
+        print("-" * 50)
 
-        for step in range(trainer.config.rl.max_steps):
-            # Формируем промпт
-            context = trainer._format_context(state)
-            inputs = trainer.tokenizer(context, return_tensors="pt", truncation=True, max_length=512)
-            inputs = {k: v.to(trainer.device) for k, v in inputs.items()}
+        import torch
+        with torch.inference_mode():
+            ids    = trainer._encode_context(state)
+            embs   = trainer._build_tool_embs(tools)
+            logits = trainer._forward_with_embs(ids, embs, scores)
+            probs  = torch.softmax(logits, dim=-1)
 
-            # Генерация
-            with torch.no_grad():
-                outputs = trainer.model.generate(
-                    **inputs,
-                    max_new_tokens=30,
-                    temperature=0.3,
-                    do_sample=True,
-                    pad_token_id=trainer.tokenizer.eos_token_id
-                )
+        # Show top-5
+        top5 = probs.topk(min(5, len(tools)))
+        for rank, (prob, idx) in enumerate(
+            zip(top5.values.tolist(), top5.indices.tolist()), 1
+        ):
+            tool = tools[idx]
+            sem  = scores[idx]
+            print(f"  {rank}. {tool}")
+            print(f"     model_prob={prob:.3f}  semantic={sem:.3f}")
 
-            response = trainer.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            tool_call = trainer._parse_tool_call(response)
-
-            if tool_call:
-                tool_name = tool_call['tool']
-                print(f"  🤖 Модель вызвала: {tool_name}")
-
-                # Исправляем tool_name если нужно
-                if tool_name == 'tool_name' or tool_name not in valid_tools:
-                    corrected = trainer._correct_tool_call(tool_name, valid_tools, query)
-                    if corrected:
-                        print(f"  🔧 Исправляем на: {corrected}")
-                        tool_name = corrected
-                    else:
-                        print(f"  ❌ Не удалось исправить вызов")
-                        break
-
-                # Выполняем вызов
-                next_state, reward, done, info = trainer.env.step(tool_name)
-                print(f"  📊 Результат:")
-                print(f"     - Инструмент: {tool_name}")
-                print(f"     - Задержка: {info.get('latency', 0):.3f}s")
-                print(f"     - Награда: {reward:.2f}")
-                print(f"     - Успех: {'✅' if info.get('success') else '❌'}")
-
-                if done:
-                    break
-
-                state = next_state
-            else:
-                print(f"  ⚠️ Модель не вызвала инструмент")
-                break
+        # Execute top-1
+        best_tool = tools[logits.argmax().item()]
+        trainer.env.reset(query_data)
+        _, _, _, info = trainer.env.step(best_tool)
+        print(f"\nExecuted: {best_tool}")
+        print(f"Success:  {info.get('success', False)}")
+        print(f"Latency:  {info.get('latency', 0):.3f}s")
+        resp = info.get("response") or info.get("result", "")
+        if resp:
+            print(f"Response: {resp[:200]}")
+        print("-" * 50 + "\n")
 
 
 if __name__ == "__main__":

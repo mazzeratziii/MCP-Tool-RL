@@ -1,4 +1,3 @@
-# src/tools/tool_selector.py
 import re
 from collections import Counter
 
@@ -177,7 +176,7 @@ class ToolSelector:
 
     def print_category_stats(self):
         """Вывод статистики по категориям"""
-        print("\n📊 СТАТИСТИКА ИНСТРУМЕНТОВ ПО КАТЕГОРИЯМ:")
+        print("\n СТАТИСТИКА ИНСТРУМЕНТОВ ПО КАТЕГОРИЯМ:")
 
         # Сортируем категории по количеству инструментов
         sorted_categories = sorted(

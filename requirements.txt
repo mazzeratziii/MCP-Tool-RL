@@ -1,27 +1,23 @@
-
-# Базовые пакеты
+# Базовые пакеты (из PyPI по умолчанию)
 numpy==1.24.3
 pandas==1.5.3
+tqdm==4.66.5
+matplotlib==3.8.4
+requests==2.31.0
+pyyaml==6.0.1
+python-dotenv>=1.0.0
+httpx>=0.27.0
+openai>=1.0.0
 
-# PyTorch с CUDA 12.4 (последняя стабильная)
+# PyTorch с CUDA 12.4
+--extra-index-url https://download.pytorch.org/whl/cu124
 torch==2.6.0
 torchvision==0.21.0
 torchaudio==2.6.0
---index-url https://download.pytorch.org/whl/cu124
-
-# Hugging Face библиотеки
 transformers==4.41.2
 datasets==2.18.0
 accelerate==0.32.0
 sentence-transformers==2.6.0
-huggingface-hub==0.23.0
-
-# PEFT и квантизация
+huggingface-hub==0.23.4
 peft==0.10.0
 bitsandbytes==0.44.1
-
-# Утилиты
-tqdm==4.66.0
-matplotlib==3.8.0
-requests==2.31.0
-pyyaml==6.0.1

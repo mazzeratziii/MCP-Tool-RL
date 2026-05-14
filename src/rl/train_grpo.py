@@ -1,565 +1,639 @@
-# src/rl/train_grpo.py
+# src/rl/train_grpo.py  v6 — multi-GPU profile
+"""
+Profiles
+--------
+  desktop   RTX 3070 8 GB  — full quality, fast
+  laptop    4 GB VRAM       — memory-safe, slower
+
+Usage:
+  python main.py --mode train --epochs 30 --profile desktop
+  python main.py --mode train --epochs 30 --profile laptop
+
+Profile is passed via config.profile (set in main.py from --profile arg).
+Falls back to 'laptop' if not set.
+"""
+
 import os
-import sys
-import platform
-import ctypes
+import gc
+import re
+import random
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+
 import torch
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from src.config import Config
+
 from src.environment.mcp_environment import MCPEnvironment
+from src.environment.network_emulator import NetworkMode
 from src.rl.reward_functions import GRPOToolReward
+from src.prompts import get_dynamic_prompt
 
-# Решение для Windows: принудительно загружаем c10.dll до остальных импортов
-if platform.system() == "Windows":
-    try:
-        import importlib.util
 
-        torch_spec = importlib.util.find_spec("torch")
-        if torch_spec and torch_spec.origin:
-            torch_dir = os.path.dirname(torch_spec.origin)
-            dll_path = os.path.join(torch_dir, "lib", "c10.dll")
-            if os.path.exists(dll_path):
-                ctypes.CDLL(os.path.normpath(dll_path))
-                print("✅ c10.dll успешно предварительно загружен в train_grpo")
-    except Exception as e:
-        print(f"⚠️ Предзагрузка c10.dll не удалась в train_grpo: {e}")
+# ── Hardware profiles ──────────────────────────────────────────────────────────
+
+@dataclass
+class HWProfile:
+    name: str
+    lora_r: int
+    lora_alpha: int
+    lora_targets: List[str]
+    grpo_group_size: int
+    train_set_size: int
+    resample_every: int
+    top_k_tools: int
+    max_ctx_len: int
+    entropy_coeff: float
+    semantic_bias: float
+    warmup_steps: int
+    grad_clip: float
+    use_double_quant: bool
+    compute_dtype: torch.dtype
+    sample_temperature: float = 1.0  # exploration temperature during collection
+
+PROFILES: Dict[str, HWProfile] = {
+    "desktop": HWProfile(
+        name            = "desktop (RTX 3070 8 GB)",
+        lora_r          = 16,
+        lora_alpha      = 32,
+        lora_targets    = ["q_proj", "v_proj", "k_proj", "o_proj"],
+        grpo_group_size = 6,
+        train_set_size  = 1500,  # was 800
+        resample_every  = 3,     # was 5
+        top_k_tools     = 20,
+        max_ctx_len     = 512,
+        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
+        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
+        warmup_steps    = 100,
+        grad_clip       = 0.5,
+        use_double_quant= False,   # not needed on 8 GB
+        compute_dtype   = torch.bfloat16,
+    ),
+    "laptop": HWProfile(
+        name            = "laptop (4 GB VRAM)",
+        lora_r          = 4,
+        lora_alpha      = 8,
+        lora_targets    = ["q_proj", "v_proj"],
+        grpo_group_size = 3,     # 4→3: 25% fewer forwards
+        train_set_size  = 600,   # 1000→600: faster epoch, diversity via resample
+        resample_every  = 2,     # resample more often to compensate
+        top_k_tools     = 15,    # 20→15: fewer tool embeds (~25% faster)
+        max_ctx_len     = 256,   # 320→256: shorter context saves attention time
+        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
+        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
+        warmup_steps    = 80,
+        grad_clip       = 0.5,
+        use_double_quant= True,
+        compute_dtype   = torch.float16,
+        sample_temperature = 1.2,
+    ),
+}
 
 
 class NetMCPTrainer:
-    """Тренер для обучения агента NetMCP с оптимизацией памяти"""
-
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
-        self.env = MCPEnvironment(config)
         self.reward_fn = GRPOToolReward(config)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Определяем устройство
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Используется устройство: {self.device}")
-
-        # Оптимизация памяти для GPU
+        # ── Select profile ────────────────────────────────────────────
+        profile_name = getattr(config, "profile", "laptop")
+        if profile_name not in PROFILES:
+            print(f"Unknown profile '{profile_name}', falling back to 'laptop'")
+            profile_name = "laptop"
+        self.p = PROFILES[profile_name]
+        print(f"\nDevice: {self.device}")
+        print(f"Profile: {self.p.name}")
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            print(f"GPU Memory: {torch.cuda.memory_allocated(0) / 1024 ** 3:.2f} GB allocated")
+            total_mb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 2
+            print(f"VRAM: {total_mb} MB")
 
-        # Загружаем модель с оптимизациями
-        print(f"Загрузка модели {config.model_name}...")
-        try:
-            # Используем 4-битную квантизацию для экономии памяти
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
-            )
-
-            self.model = AutoModelForCausalLM.from_pretrained(
-                config.model_name,
-                quantization_config=quantization_config,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                low_cpu_mem_usage=True
-            )
-
-            self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            print("✅ Модель успешно загружена с 4-битной квантизацией")
-
-            # Используем PEFT/LoRA для эффективного обучения
-            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-
-            # Подготавливаем модель для k-bit обучения
-            self.model = prepare_model_for_kbit_training(self.model)
-
-            # Конфигурация LoRA
-            lora_config = LoraConfig(
-                r=8,  # ранг
-                lora_alpha=32,
-                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-                lora_dropout=0.05,
-                bias="none",
-                task_type="CAUSAL_LM"
-            )
-
-            self.model = get_peft_model(self.model, lora_config)
-            self.model.print_trainable_parameters()  # Покажет сколько параметров обучается
-
-        except Exception as e:
-            print(f"❌ Ошибка загрузки модели: {e}")
-            raise
-
-        # Оптимизатор с меньшим размером batch
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.config.rl.learning_rate,
-            weight_decay=0.01
+        # ── Model ─────────────────────────────────────────────────────
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=self.p.compute_dtype,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=self.p.use_double_quant,
         )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            quantization_config=quant_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            config.model_name, trust_remote_code=True
+        )
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # Gradient checkpointing для экономии памяти
+        self.model = prepare_model_for_kbit_training(
+            self.model, use_gradient_checkpointing=True
+        )
         self.model.gradient_checkpointing_enable()
 
-    def train(self):
-        """Цикл обучения с подробной отладкой"""
-        print("\n" + "=" * 50)
-        print("НАЧАЛО ОБУЧЕНИЯ")
-        print("=" * 50)
-        print(f"Конфигурация:")
-        print(f"  - Алгоритм: {self.config.rl.algorithm}")
-        print(f"  - Эпох: {self.config.rl.num_epochs}")
-        print(f"  - Batch size: {self.config.rl.batch_size}")
-        print(f"  - Max steps: {self.config.rl.max_steps}")
-        print(f"  - Всего промптов: {len(self.config.prompts)}")
-        print(f"  - Trainable params: 2.2M / 1.5B (0.14%)")
+        self.model = get_peft_model(
+            self.model,
+            LoraConfig(
+                r=self.p.lora_r,
+                lora_alpha=self.p.lora_alpha,
+                target_modules=self.p.lora_targets,
+                task_type="CAUSAL_LM",
+                lora_dropout=0.05,
+            ),
+        )
+        self.model.print_trainable_parameters()
 
-        # История обучения
-        loss_history = []
-        reward_history = []
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=config.rl.learning_rate,
+            weight_decay=config.rl.weight_decay,
+            foreach=False,
+        )
+        self._update_step = 0
 
-        for epoch in range(self.config.rl.num_epochs):
-            print(f"\n{'=' * 40}")
-            print(f"ЭПОХА {epoch + 1}/{self.config.rl.num_epochs}")
-            print(f"{'=' * 40}")
+        self.env = MCPEnvironment(
+            config, llm_client=None, network_mode=NetworkMode.DETERMINISTIC
+        )
+        self.llm_client = None
 
-            # Очищаем кэш GPU
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                print(f"GPU память до сбора: {torch.cuda.memory_allocated(0) / 1024 ** 3:.2f} GB")
+        # ── Fixed training pool ───────────────────────────────────────
+        pool = [p for p in config.train_prompts if p.get("relevant_tools")]
+        if not pool:
+            pool = config.train_prompts
+        self._train_pool = pool
+        self.train_set = random.sample(pool, min(self.p.train_set_size, len(pool)))
 
-            # Собираем траектории
-            print("\n📊 Сбор траекторий...")
-            trajectories = self._collect_trajectories()
-            print(f"   Собрано {len(trajectories)} траекторий")
+        print(f"Train pool: {len(pool)} prompts  "
+              f"train_set={len(self.train_set)}  "
+              f"top_k={self.p.top_k_tools}  "
+              f"group_size={self.p.grpo_group_size}")
 
-            # Проверяем содержимое траекторий
-            valid_trajectories = 0
-            for i, traj in enumerate(trajectories):
-                if traj['steps']:
-                    valid_trajectories += 1
-                    print(f"   Траектория {i + 1}: {len(traj['steps'])} шагов, успех: {traj['success']}")
+        # Pre-cache all tool name embeddings (done once, saves ~80% of per-step tokenisation)
+        print("Pre-caching tool embeddings...")
+        self._tool_emb_cache: Dict[str, torch.Tensor] = {}
+        embed_layer = self.model.get_input_embeddings()
+        with torch.inference_mode():
+            for tool in config.tools:
+                name = tool["name"]
+                ids = self.tokenizer(
+                    name, return_tensors="pt", add_special_tokens=False
+                ).input_ids.to(self.device)
+                self._tool_emb_cache[name] = embed_layer(ids).mean(dim=1).squeeze(0).detach().cpu()
+        print(f"Cached {len(self._tool_emb_cache)} tool embeddings")
 
-            print(f"   Валидных траекторий: {valid_trajectories}")
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
 
-            if valid_trajectories == 0:
-                print("❌ Нет валидных траекторий! Проверьте формат ответов модели.")
-                continue
-
-            # Обучаем на траекториях
-            print("\n📈 Обучение на траекториях...")
-            epoch_loss = 0
-            epoch_reward = 0
-
-            for traj_idx, traj in enumerate(trajectories):
-                if not traj['steps']:
-                    continue
-
-                print(f"   Обучение на траектории {traj_idx + 1}...")
-                loss = self._train_on_trajectory(traj)
-                epoch_loss += loss
-
-                # Считаем среднюю награду
-                traj_reward = sum(step['reward'] for step in traj['steps'])
-                epoch_reward += traj_reward
-
-                print(f"     Потеря: {loss:.4f}, награда: {traj_reward:.2f}")
-
-            if valid_trajectories > 0:
-                avg_loss = epoch_loss / valid_trajectories
-                avg_reward = epoch_reward / valid_trajectories
-            else:
-                avg_loss = 0
-                avg_reward = 0
-
-            loss_history.append(avg_loss)
-            reward_history.append(avg_reward)
-
-            print(f"\n📊 Итоги эпохи {epoch + 1}:")
-            print(f"  Средняя потеря: {avg_loss:.4f}")
-            print(f"  Средняя награда: {avg_reward:.2f}")
-            print(f"  GPU память: {torch.cuda.memory_allocated(0) / 1024 ** 3:.2f} GB")
-
-            # Оценка после каждой эпохи
-            print("\n🔍 Оценка агента...")
-            self.evaluate()
-
-            # Сохраняем чекпоинт
-            self._save_checkpoint(epoch)
-
-        print("\n" + "=" * 50)
-        print("✅ ОБУЧЕНИЕ ЗАВЕРШЕНО!")
-        print("=" * 50)
-        if loss_history:
-            print(f"Финальная потеря: {loss_history[-1]:.4f}")
-            print(f"Финальная награда: {reward_history[-1]:.2f}")
-        else:
-            print("⚠️ Обучение не произошло (нет данных)")
-
-        # Визуализация результатов
-        self._plot_training_history(loss_history, reward_history)
-
-    def _collect_trajectories(self):
-        """Сбор траекторий с подробным логированием"""
-        trajectories = []
-
-        # Очищаем кэш перед сбором
+    def _clear(self):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        gc.collect()
 
-        batch_prompts = self.config.prompts[:self.config.rl.batch_size]
-        print(f"   Обработка {len(batch_prompts)} промптов...")
+    def _current_lr(self) -> float:
+        return self.config.rl.learning_rate * min(
+            1.0, (self._update_step + 1) / self.p.warmup_steps
+        )
 
-        for prompt_idx, prompt_data in enumerate(batch_prompts):
-            print(f"   Промпт {prompt_idx + 1}: {prompt_data['query'][:50]}...")
-
-            # СБРАСЫВАЕМ СРЕДУ ДЛЯ КАЖДОГО ПРОМПТА
-            state = self.env.reset(prompt_data)
-
-            # Получаем список реальных инструментов для этого состояния
-            valid_tool_names = [t['name'] for t in state['tools'] if t['available']]
-
-            # Если нет валидных инструментов - пропускаем
-            if not valid_tool_names:
-                print(f"     ⚠️ Нет доступных инструментов для этого запроса")
-                trajectories.append({
-                    'prompt': prompt_data['query'],
-                    'steps': [],
-                    'success': False
-                })
-                continue
-
-            trajectory = {
-                'prompt': prompt_data['query'],
-                'steps': [],
-                'success': False
-            }
-
-            for step in range(self.config.rl.max_steps):
-                # Используем обычный промпт
-                context = self._format_context(state)
-                inputs = self.tokenizer(context, return_tensors="pt", truncation=True, max_length=512)
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-                # Генерация
-                with torch.no_grad():
-                    outputs = self.model.generate(
-                        **inputs,
-                        max_new_tokens=30,
-                        temperature=0.3,
-                        do_sample=True,
-                        pad_token_id=self.tokenizer.eos_token_id
-                    )
-
-                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                tool_call = self._parse_tool_call(response)
-
-                if tool_call:
-                    tool_name = tool_call['tool']
-                    print(f"     Шаг {step + 1}: вызван {tool_name}")
-
-                    # Проверяем, существует ли инструмент
-                    if tool_name in valid_tool_names:
-                        next_state, reward, done, info = self.env.step(tool_name)
-
-                        trajectory['steps'].append({
-                            'state': state,
-                            'action': tool_name,
-                            'reward': reward,
-                            'latency': info.get('latency', 0),
-                            'success': info.get('success', False)
-                        })
-
-                        state = next_state
-                        if done:
-                            trajectory['success'] = info.get('success', False)
-                            print(f"     Задача {'решена' if trajectory['success'] else 'провалена'}")
-                            break
-                    else:
-                        print(f"     Некорректный вызов инструмента: {tool_name}")
-                        print(f"     Допустимые инструменты: {valid_tool_names}")
-
-                        # Пытаемся исправить
-                        corrected_tool = self._correct_tool_call(tool_name, valid_tool_names, prompt_data['query'])
-
-                        if corrected_tool:
-                            print(f"     Исправляем на: {corrected_tool}")
-                            next_state, reward, done, info = self.env.step(corrected_tool)
-
-                            trajectory['steps'].append({
-                                'state': state,
-                                'action': corrected_tool,
-                                'reward': reward * 0.5,
-                                'latency': info.get('latency', 0),
-                                'success': info.get('success', False)
-                            })
-
-                            state = next_state
-                            if done:
-                                trajectory['success'] = info.get('success', False)
-                                print(f"     Задача {'решена' if trajectory['success'] else 'провалена'}")
-                                break
-                        else:
-                            # Штрафуем за невалидный вызов
-                            trajectory['steps'].append({
-                                'state': state,
-                                'action': tool_name,
-                                'reward': self.config.reward.invalid_call_penalty,
-                                'latency': 0,
-                                'success': False
-                            })
-                            break
-                else:
-                    print(f"     Шаг {step + 1}: нет вызова инструмента")
-                    break
-
-            trajectories.append(trajectory)
-
-        return trajectories
-
-    def _correct_tool_call(self, wrong_tool, valid_tools, query):
-        """Улучшенные эвристики с приоритетом для математических запросов"""
-        if not valid_tools:
+    def _parse_tool_call(self, text: str) -> Optional[str]:
+        if not text:
             return None
-
-        query_lower = query.lower()
-        print(f"     🔍 Анализ запроса: '{query_lower}'")
-
-        # Приоритетные категории инструментов
-        priority_keywords = {
-            'math': ['+', '-', '*', '/', 'сколько', 'посчитай', 'calculate', 'math', '2 + 2', '2+2', 'plus', 'minus',
-                     'times', 'divided'],
-            'calculator': ['calc', 'calculator', 'compute', 'arithmetic'],
-            'search': ['search', 'find', 'lookup', 'информация', 'найди', 'поиск'],
-            'weather': ['weather', 'погода', 'temperature', 'temp'],
-            'database': ['database', 'db', 'sql', 'query', 'data'],
-            'translate': ['translate', 'переведи', 'translation']
-        }
-
-        # Сначала ищем инструменты с "calc" или "math" в названии для математических запросов
-        if any(word in query_lower for word in priority_keywords['math']):
-            print(f"     🧮 Обнаружен математический запрос")
-            for tool in valid_tools:
-                tool_lower = tool.lower()
-                if any(x in tool_lower for x in ['calc', 'math', 'compute', 'arithmetic']):
-                    print(f"     ✅ Найден математический инструмент: {tool}")
-                    return tool
-
-        # Если не нашли, используем систему оценки
-        best_match = None
-        best_score = 0
-
-        for tool in valid_tools:
-            score = 0
-            tool_lower = tool.lower()
-
-            # Проверяем каждую категорию
-            for category, keywords in priority_keywords.items():
-                if any(word in query_lower for word in keywords):
-                    if any(x in tool_lower for x in keywords[:3]):  # Проверяем первые 3 ключевых слова
-                        score += 5
-                    elif category in tool_lower:
-                        score += 3
-
-            # Проверяем отдельные слова из запроса
-            query_words = set(query_lower.split())
-            tool_words = set(tool_lower.replace('.', ' ').replace('/', ' ').replace('-', ' ').replace('_', ' ').split())
-            common_words = query_words.intersection(tool_words)
-            score += len(common_words) * 2
-
-            print(f"     Инструмент '{tool}' имеет оценку {score}")
-
-            if score > best_score:
-                best_score = score
-                best_match = tool
-
-        if best_match and best_score > 0:
-            print(f"     🔍 Выбран инструмент с оценкой {best_score}: {best_match}")
-            return best_match
-
-        # Если ничего не нашли, возвращаем первый инструмент
-        print(f"     ⚠️ Ничего не найдено, берём первый: {valid_tools[0]}")
-        return valid_tools[0]
-
-    def _train_on_trajectory(self, trajectory):
-        """Обучение на одной траектории с оптимизацией памяти"""
-        if not trajectory['steps']:
-            return 0.0
-
-        total_loss = 0
-
-        for step in trajectory['steps']:
-            # Очищаем градиенты
-            self.optimizer.zero_grad()
-
-            context = self._format_context(step['state'])
-            inputs = self.tokenizer(context, return_tensors="pt", truncation=True, max_length=512)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-            # Используем autocast для смешанной точности
-            with torch.cuda.amp.autocast():
-                outputs = self.model(**inputs, labels=inputs['input_ids'])
-                loss = outputs.loss
-
-            # Обратное распространение
-            loss.backward()
-
-            # Gradient clipping для стабильности
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
-            self.optimizer.step()
-
-            # Очищаем ненужные тензоры
-            del inputs, outputs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            total_loss += loss.item()
-
-        return total_loss / len(trajectory['steps'])
-
-    def _format_context(self, state):
-        """Форматирование контекста с динамическим промптом"""
-        from src.prompts import get_dynamic_prompt
-
-        # Берем доступные инструменты из состояния
-        available_tools = []
-        for tool in state['tools']:
-            if tool['available']:
-                available_tools.append({
-                    'name': tool['name'],
-                    'description': tool['description'],
-                    'category': tool['category']
-                })
-
-        # Если нет доступных инструментов, используем все
-        if not available_tools:
-            available_tools = state['tools']
-
-        return get_dynamic_prompt(state['query'], available_tools)
-
-    def _parse_tool_call(self, response):
-        """Парсинг вызова инструмента из ответа модели"""
-        import re
-        pattern = r'<tool_call>(.*?)</tool_call>'
-        match = re.search(pattern, response)
-        if match:
-            return {'tool': match.group(1).strip()}
+        m = re.search(r"<tool_call>(.*?)</tool_call>", text, re.IGNORECASE | re.DOTALL)
+        if m:
+            name = m.group(1).strip()
+            return name if name and name.lower() != "none" else None
+        for token in text.split():
+            token = token.strip(".,;\"'")
+            if "." in token and len(token) > 3:
+                return token
         return None
 
-    def _validate_tool_call(self, tool_call, state):
-        """Проверяет, существует ли вызываемый инструмент"""
-        if not tool_call:
-            return False
+    # ------------------------------------------------------------------
+    # Tool state helpers
+    # ------------------------------------------------------------------
 
-        tool_name = tool_call.get('tool')
-        if not tool_name:
-            return False
+    def _get_tools_state(self, prompt: Dict):
+        """Returns (state, tools_list, semantic_scores)."""
+        state = self.env.reset(prompt)
+        candidates = self.env.tools.get_top_k_tools(
+            self.env.current_query, k=self.p.top_k_tools
+        )
 
-        # Проверяем, есть ли такой инструмент в состоянии
-        valid_tools = [t['name'] for t in state['tools'] if t['available']]
-        return tool_name in valid_tools
+        # Минимальный порог релевантности для фильтрации
+        MIN_SEMANTIC_THRESHOLD = 0.70
 
-    def evaluate(self):
-        """Оценка агента с эвристиками"""
-        print("\n" + "=" * 50)
-        print("ОЦЕНКА АГЕНТА")
-        print("=" * 50)
+        tools_state = []
+        for tool in candidates:
+            sv = self.env.network.get_server_state(tool["name"])
+            qos = self.env.network.get_qos_metrics(tool["name"])
+            sem = self.env.tools.semantic_similarity(
+                self.env.current_query, tool["name"]
+            )
 
-        test_prompts = [
-            "Top 10 NBA players",
-            "Bitcoin price USD",
-            "Weather in London",
-            "Latest songs by Drake"
-        ]
+            # Пропускаем инструменты с низкой релевантностью
+            if sem < MIN_SEMANTIC_THRESHOLD:
+                continue
 
-        for prompt in test_prompts:
-            query_data = {'query': prompt, 'domain': 'test', 'relevant_tools': []}
-            state = self.env.reset(query_data)
-            print(f"\n📝 Запрос: {prompt}")
+            is_rel = any(rt["name"] == tool["name"] for rt in self.env.relevant_tools)
+            tools_state.append({
+                "name": tool["name"],
+                "category": tool.get("category", "general"),
+                "description": tool.get("description", "")[:50] + "...",
+                "available": sv["available"],
+                "latency": qos["avg_latency"],
+                "stability": qos["stability"],
+                "semantic_score": sem,
+                "is_relevant": is_rel,
+                "used": False,
+            })
+        state["tools"] = tools_state
+        tools = [t["name"] for t in tools_state]
+        scores = [t["semantic_score"] for t in tools_state]
+        return state, tools, scores
 
-            valid_tools = [t['name'] for t in state['tools'] if t['available']]
+    # ------------------------------------------------------------------
+    # Encode context and build tool embeddings — ONCE per group
+    # ------------------------------------------------------------------
 
-            for step in range(self.config.rl.max_steps):
-                context = self._format_context(state)
-                inputs = self.tokenizer(context, return_tensors="pt")
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+    def _encode_context(self, state: Dict) -> torch.Tensor:
+        ctx = get_dynamic_prompt(state["query"], state["tools"])
+        ids = self.tokenizer(
+            ctx, return_tensors="pt",
+            truncation=True, max_length=self.p.max_ctx_len, padding=False,
+        ).input_ids.to(self.device)
+        return ids
 
-                with torch.no_grad():
-                    outputs = self.model.generate(**inputs, max_new_tokens=30)
+    @torch.inference_mode()
+    def _build_tool_embs(self, tools: List[str]) -> torch.Tensor:
+        """Return (n, d) matrix using pre-cached embeddings — no tokenisation per call."""
+        embs = []
+        embed_layer = self.model.get_input_embeddings()
+        for t in tools:
+            if t in self._tool_emb_cache:
+                embs.append(self._tool_emb_cache[t].to(self.device))
+            else:
+                ids = self.tokenizer(
+                    t, return_tensors="pt", add_special_tokens=False
+                ).input_ids.to(self.device)
+                embs.append(embed_layer(ids).mean(dim=1).squeeze(0).detach())
+        return torch.stack(embs, dim=0)   # (n, d)
 
-                response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                tool_call = self._parse_tool_call(response)
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
 
-                if tool_call:
-                    tool_name = tool_call['tool']
-                    print(f"  🤖 Модель вызвала: {tool_name}")
+    def _forward_with_embs(self, input_ids: torch.Tensor,
+                           tool_embs: torch.Tensor,
+                           semantic_scores: Optional[List[float]] = None
+                           ) -> torch.Tensor:
+        out = self.model(input_ids, output_hidden_states=True)
+        hidden = out.hidden_states[-1][:, -1, :]          # (1, d)
+        logits = torch.matmul(hidden, tool_embs.T).squeeze(0)
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
+        logits = torch.clamp(logits, min=-15.0, max=15.0)
+        if semantic_scores is not None:
+            bias = torch.tensor(semantic_scores, device=self.device, dtype=torch.float32)
+            bias = (bias - bias.mean()) * self.p.semantic_bias
+            logits = logits + bias
+        return logits
 
-                    # ДОБАВЛЯЕМ ИСПРАВЛЕНИЕ!
-                    if tool_name == 'tool_name' or tool_name not in valid_tools:
-                        corrected = self._correct_tool_call(tool_name, valid_tools, prompt)
-                        if corrected:
-                            print(f"  🔧 Исправляем на: {corrected}")
-                            tool_name = corrected
+    # ------------------------------------------------------------------
+    # Build one GRPO group
+    # ------------------------------------------------------------------
 
-                    if tool_name in valid_tools:
-                        next_state, reward, done, info = self.env.step(tool_name)
-                        print(f"  ✅ Использован: {tool_name}")
-                        print(f"     Награда: {reward:.2f}")
-                        print(f"     Успех: {'✅' if info.get('success') else '❌'}")
+    def _make_group(self, prompt: Dict) -> Dict:
+        state, tools, scores = self._get_tools_state(prompt)
+        input_ids = self._encode_context(state)
+        tool_embs = self._build_tool_embs(tools)   # inference_mode
 
-                        if done:
-                            break
+        rollouts = []
+        with torch.inference_mode():
+            for _ in range(self.p.grpo_group_size):
+                logits = self._forward_with_embs(input_ids, tool_embs, scores)
+                probs = F.softmax(logits, dim=-1)
+                probs = torch.nan_to_num(probs, nan=1e-8)
+                probs = probs / (probs.sum() + 1e-8)
+                # Apply temperature — higher = more exploration, fewer skipped groups
+                if self.p.sample_temperature != 1.0:
+                    logits_t = (logits / self.p.sample_temperature)
+                    probs = torch.softmax(logits_t, dim=-1)
+                    probs = torch.nan_to_num(probs, nan=1e-8)
+                    probs = probs / (probs.sum() + 1e-8)
+                dist = torch.distributions.Categorical(probs)
+                idx = dist.sample()
 
-                        state = next_state
-                    else:
-                        print(f"  ❌ Некорректный инструмент: {tool_name}")
-                        break
+                tool_name = tools[idx.item()]
+                self.env.reset(prompt)
+                _, _, _, info = self.env.step(tool_name)
+
+                # Вычисляем относительные метрики для reward
+                avg_latency = sum(t['latency'] for t in state['tools']) / len(state['tools'])
+                availability_ratio = sum(1 for t in state['tools'] if t['available']) / len(state['tools'])
+
+                # Получаем метрики выбранного инструмента
+                selected_tool = state['tools'][idx.item()]
+
+                reward = self.reward_fn.compute_outcome_reward(
+                    success=info.get("success", False),
+                    steps=1,
+                    is_relevant=info.get("is_relevant", False),
+                    latency=info.get("latency", 0.0),
+                    semantic_score=info.get("semantic_score", 0.0),
+                    available=selected_tool.get("available", True),
+                    stability=selected_tool.get("stability", 1.0),
+                    avg_latency=avg_latency,
+                    availability_ratio=availability_ratio,
+                )
+                rollouts.append({
+                    "tool_idx": idx.item(),
+                    "reward": reward,
+                    "success": info.get("success", False),
+                    "is_relevant": info.get("is_relevant", False),
+                })
+
+        # GRPO advantage
+        rews = [r["reward"] for r in rollouts]
+        mean_r = sum(rews) / len(rews)
+        std_r = (sum((x - mean_r) ** 2 for x in rews) / len(rews)) ** 0.5
+        for r in rollouts:
+            adv = r["reward"] - mean_r
+            r["advantage"] = adv / (std_r + 1e-8) if std_r > 1e-8 else 0.0
+
+        return {
+            "input_ids": input_ids,
+            "tool_embs": tool_embs,
+            "semantic_scores": scores,
+            "rollouts": rollouts,
+            "adv_std": std_r,
+        }
+
+    # ------------------------------------------------------------------
+    # Gradient update for one group
+    # ------------------------------------------------------------------
+
+    def _train_group(self, group: Dict) -> Optional[float]:
+        if group["adv_std"] < 1e-8:
+            return None
+
+        input_ids  = group["input_ids"]
+        # clone: inference_mode tensors can't participate in backward
+        tool_embs  = group["tool_embs"].clone()
+        scores     = group["semantic_scores"]
+        rollouts   = group["rollouts"]
+        n          = len(rollouts)
+
+        self.optimizer.zero_grad()
+        total_loss = 0.0
+
+        for r in rollouts:
+            logits = self._forward_with_embs(input_ids, tool_embs, scores)
+            probs = F.softmax(logits, dim=-1)
+            probs = torch.nan_to_num(probs, nan=1e-8)
+            probs = probs / (probs.sum() + 1e-8)
+            dist = torch.distributions.Categorical(probs)
+
+            lp      = dist.log_prob(torch.tensor(r["tool_idx"], device=self.device))
+            adv     = torch.tensor(r["advantage"], device=self.device, dtype=torch.float32)
+            entropy = dist.entropy()
+
+            loss = (-adv * lp - self.p.entropy_coeff * entropy) / n
+            if torch.isnan(loss) or torch.isinf(loss):
+                continue
+
+            loss.backward()
+            total_loss += loss.item()
+
+            del logits, probs, dist, lp, adv, entropy, loss
+
+        if total_loss == 0.0:
+            self.optimizer.zero_grad()
+            return None
+
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.p.grad_clip)
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = self._current_lr()
+        self.optimizer.step()
+        self._update_step += 1
+        return total_loss
+
+    # ------------------------------------------------------------------
+    # train()
+    # ------------------------------------------------------------------
+
+    def train(self):
+        print(f"\n{'=' * 60}")
+        print(f"GRPO TRAINING [{self.p.name}] — {self.config.rl.num_epochs} epochs")
+        print(f"{'=' * 60}")
+
+        best_relevance = 0.0
+
+        for epoch in range(1, self.config.rl.num_epochs + 1):
+            # НОВОЕ: Ротация сценариев каждые 5 эпох для разнообразия
+            if epoch % 5 == 1:
+                self.env.network.rotate_scenario()
+                print(f"\n--- Epoch {epoch} [scenario: {self.env.network.current_scenario}] ---")
+
+            # Resample train set for diversity
+            if epoch % self.p.resample_every == 1:
+                self.train_set = random.sample(
+                    self._train_pool,
+                    min(self.p.train_set_size, len(self._train_pool))
+                )
+                print(f"    [resample → {len(self.train_set)} queries]")
+            else:
+                print(f"\n--- Epoch {epoch}/{self.config.rl.num_epochs} ---")
+
+            queries = self.train_set.copy()
+            random.shuffle(queries)
+
+            losses, adv_stds = [], []
+            success_n = relevant_n = total_n = skipped = 0
+            total_reward = 0.0
+
+            for i, prompt in enumerate(queries):
+                group = self._make_group(prompt)
+                adv_stds.append(group["adv_std"])
+
+                loss = self._train_group(group)
+                if loss is None:
+                    skipped += 1
                 else:
-                    print(f"  ⚠️ Нет вызова инструмента")
-                    break
-    def _save_checkpoint(self, epoch):
-        """Сохранение чекпоинта модели"""
-        checkpoint_dir = f"checkpoints/epoch_{epoch + 1}"
-        os.makedirs(checkpoint_dir, exist_ok=True)
+                    losses.append(loss)
 
-        # Сохраняем LoRA веса (они маленькие)
-        self.model.save_pretrained(checkpoint_dir)
-        self.tokenizer.save_pretrained(checkpoint_dir)
+                for r in group["rollouts"]:
+                    total_n += 1
+                    total_reward += r["reward"]
+                    success_n += int(r["success"])
+                    relevant_n += int(r["is_relevant"])
 
-        print(f"  💾 Чекпоинт сохранен в {checkpoint_dir}")
+                del group
+                if i % 100 == 99:
+                    self._clear()
 
-    def _plot_training_history(self, loss_history, reward_history):
-        """Визуализация истории обучения"""
+            rel = relevant_n / max(total_n, 1)
+            print(
+                f"  loss={sum(losses)/max(len(losses),1):.4f}  "
+                f"reward={total_reward/max(total_n,1):.3f}  "
+                f"success={success_n/max(total_n,1):.2%}  "
+                f"relevance={rel:.2%}  "
+                f"rollouts={total_n}  skipped={skipped}  "
+                f"updates={len(losses)}  "
+                f"adv_std={sum(adv_stds)/max(len(adv_stds),1):.3f}  "
+                f"lr={self._current_lr():.2e}"
+            )
+
+            if rel > best_relevance:
+                best_relevance = rel
+                self._save_checkpoint("best")
+                print(f"  ★ New best relevance={best_relevance:.2%}")
+
+            if epoch % 10 == 0:
+                self._save_checkpoint(epoch)
+
+            self._clear()
+
+        print("\nTraining complete.")
+
+    # ------------------------------------------------------------------
+    # evaluate()
+    # ------------------------------------------------------------------
+
+    def evaluate(self, num_episodes: int = 200,
+                 network_mode: NetworkMode = NetworkMode.CONTROLLED):
+        print(f"\n{'=' * 60}")
+        print(f"EVALUATION [{self.p.name}] — {num_episodes} ep, mode={network_mode.value}")
+        print(f"{'=' * 60}")
+
+        self.env.set_network_mode(network_mode)
+        pool = [p for p in self.config.val_prompts if p.get("relevant_tools")]
+        selected = random.sample(pool or self.config.val_prompts,
+                                 min(num_episodes, len(pool or self.config.val_prompts)))
+
+        success_t = relevant_t = total_t = 0
+        top3_relevant_t = 0   # relevant tool appears in model's top-3
+
+        # НОВОЕ: Метрики для оценки адаптации к сети
+        total_latency = 0.0
+        fast_tool_choices = 0  # выбран инструмент быстрее среднего
+        available_tool_choices = 0  # выбран доступный инструмент
+
+        self.model.eval()
+        with torch.inference_mode():
+            for prompt in selected:
+                state, tools, scores = self._get_tools_state(prompt)
+                ids    = self._encode_context(state)
+                embs   = self._build_tool_embs(tools)
+                logits = self._forward_with_embs(ids, embs, scores)
+
+                # Top-1 greedy
+                top1_idx  = logits.argmax().item()
+                tool      = tools[top1_idx]
+                self.env.reset(prompt)
+                _, _, _, info = self.env.step(tool)
+                total_t    += 1
+                success_t  += int(info.get("success", False))
+                relevant_t += int(info.get("is_relevant", False))
+
+                # НОВОЕ: Сбор метрик адаптации к сети
+                latency = info.get("latency", 0.0)
+                total_latency += latency
+
+                avg_latency = sum(t['latency'] for t in state['tools']) / len(state['tools'])
+                if latency < avg_latency:
+                    fast_tool_choices += 1
+
+                selected_tool = state['tools'][top1_idx]
+                if selected_tool.get('available', True):
+                    available_tool_choices += 1
+
+                # Top-3 accuracy: check if any of top-3 is relevant
+                top3_indices = logits.topk(min(3, len(tools))).indices.tolist()
+                relevant_names = {t["name"] for t in state["tools"]
+                                  if t.get("is_relevant", False)}
+                if any(tools[i] in relevant_names for i in top3_indices):
+                    top3_relevant_t += 1
+
+        self.model.train()
+        self.env.set_network_mode(NetworkMode.DETERMINISTIC)
+        n = max(total_t, 1)
+        print(f"  Episodes:           {total_t}")
+        print(f"  Success rate:       {success_t/n:.2%}")
+        print(f"  Relevance@1:        {relevant_t/n:.2%}   (greedy top-1)")
+        print(f"  Relevance@3:        {top3_relevant_t/n:.2%}  (relevant in top-3)")
+        print(f"  Top-3 gap:          {(top3_relevant_t - relevant_t)/n:+.2%}")
+        print(f"\n  Network Adaptation Metrics:")
+        print(f"  Avg latency:        {total_latency/n:.3f}s")
+        print(f"  Fast tool choices:  {fast_tool_choices/n:.2%}  (below avg latency)")
+        print(f"  Available choices:  {available_tool_choices/n:.2%}  (chose available tools)")
+
+    # ------------------------------------------------------------------
+    # Checkpoint save / load
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(self, label):
+        d = f"checkpoints/{label}"
+        os.makedirs(d, exist_ok=True)
+        self.model.save_pretrained(d)
+        self.tokenizer.save_pretrained(d)
+        # Save profile so checkpoint can be resumed correctly
+        import json
+        meta = {
+            "profile": [k for k, v in PROFILES.items() if v is self.p][0],
+            "lora_r": self.p.lora_r,
+            "lora_targets": self.p.lora_targets,
+            "update_step": self._update_step,
+        }
+        with open(f"{d}/train_meta.json", "w") as f:
+            json.dump(meta, f, indent=2)
+        print(f"  ✓ Checkpoint: {d}")
+
+    def load_checkpoint(self, checkpoint_path: str):
+        """
+        Load LoRA adapter weights into the already-initialised model.
+        Uses set_adapter / load_adapter instead of PeftModel.from_pretrained
+        to avoid the 'multiple adapters' warning and missing-key errors when
+        the checkpoint profile differs from the current one.
+        """
+        import os
+        from safetensors.torch import load_file as st_load
+        import torch
+
+        print(f"Loading checkpoint from {checkpoint_path}...")
+
+        # Try loading via PEFT's own adapter loader (no double-wrapping)
         try:
-            import matplotlib.pyplot as plt
-
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-
-            # График потерь
-            ax1.plot(loss_history, 'b-', marker='o')
-            ax1.set_xlabel('Эпоха')
-            ax1.set_ylabel('Потеря')
-            ax1.set_title('Динамика потерь')
-            ax1.grid(True)
-
-            # График наград
-            ax2.plot(reward_history, 'g-', marker='o')
-            ax2.set_xlabel('Эпоха')
-            ax2.set_ylabel('Средняя награда')
-            ax2.set_title('Динамика наград')
-            ax2.grid(True)
-
-            plt.tight_layout()
-            plt.savefig('training_history.png')
-            print("  📊 Графики сохранены в training_history.png")
-        except ImportError:
-            print("  📊 Для визуализации установите matplotlib: pip install matplotlib")
-
-    def load_checkpoint(self, checkpoint_path):
-        """Загрузка чекпоинта"""
-        from peft import PeftModel
-        try:
-            self.model = PeftModel.from_pretrained(self.model, checkpoint_path)
-            print(f"✅ Успешно загружен чекпоинт из {checkpoint_path}")
+            self.model.load_adapter(checkpoint_path, adapter_name="default")
+            print("Checkpoint loaded via load_adapter.")
+            return
         except Exception as e:
-            print(f"❌ Ошибка загрузки чекпоинта: {e}")
-            raise
+            print(f"  load_adapter failed ({e}), trying manual weight load...")
+
+        # Fallback: load safetensors / pytorch_model.bin directly
+        st_path  = os.path.join(checkpoint_path, "adapter_model.safetensors")
+        bin_path = os.path.join(checkpoint_path, "adapter_model.bin")
+
+        if os.path.exists(st_path):
+            state = st_load(st_path, device="cpu")
+        elif os.path.exists(bin_path):
+            state = torch.load(bin_path, map_location="cpu")
+        else:
+            print(f"  No adapter weights found in {checkpoint_path}, skipping.")
+            return
+
+        missing, unexpected = self.model.load_state_dict(state, strict=False)
+        loaded = len(state) - len(missing)
+        print(f"  Loaded {loaded}/{len(state)} keys "
+              f"({len(missing)} missing, {len(unexpected)} unexpected)")
+        print("Checkpoint loaded.")
+
+    # Compatibility shim for interactive mode
+    def _forward(self, context: str, tools: List[str], **kwargs) -> torch.Tensor:
+        ids  = self.tokenizer(
+            context, return_tensors="pt",
+            truncation=True, max_length=self.p.max_ctx_len, padding=False,
+        ).input_ids.to(self.device)
+        embs = self._build_tool_embs(tools)
+        with torch.inference_mode():
+            return self._forward_with_embs(ids, embs, kwargs.get("semantic_scores"))

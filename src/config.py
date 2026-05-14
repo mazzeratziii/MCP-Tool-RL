@@ -1,18 +1,18 @@
-# src/config.py
+# config.py
+import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-from src.data.toolbench_loader import ToolBenchLoader
-from src.tools.tool_selector import ToolSelector
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass
 class NetworkConfig:
-    """Конфигурация эмуляции сети"""
     base_latency_range: Tuple[float, float] = (0.05, 1.0)
     jitter_range: Tuple[float, float] = (0.01, 0.2)
     failure_rate_range: Tuple[float, float] = (0.01, 0.2)
     congestion_factor_range: Tuple[float, float] = (0.5, 2.0)
-
     base_latency: float = 0.1
     jitter: float = 0.05
     failure_rate: float = 0.1
@@ -21,44 +21,41 @@ class NetworkConfig:
 
 @dataclass
 class ToolBenchConfig:
-    """Конфигурация загрузки ToolBench"""
     split: str = "train"
-    sample_size: Optional[int] = 30000
-    num_tools: int = 7000
+    sample_size: Optional[int] = 80000
+    num_tools: int = 15000
 
 
 @dataclass
 class RLConfig:
-    """Конфигурация RL"""
     algorithm: str = "grpo"
-    learning_rate: float = 2e-5
-    batch_size: int = 2
-    num_epochs: int = 20
-    max_steps: int = 3
-    kl_coef: float = 0.1
-    temperature: float = 0.7
-    gradient_accumulation_steps: int = 2
+    learning_rate: float = 1e-5
+    batch_size: int = 8
+    num_epochs: int = 100
+    max_steps: int = 5
+    kl_coef: float = 0.2
+    temperature: float = 0.8
+    gradient_accumulation_steps: int = 4
+    weight_decay: float = 0.01
+    dropout: float = 0.1
 
 
 @dataclass
 class RewardConfig:
-    """Конфигурация системы наград"""
-    success_reward: float = 1.0
-    failure_penalty: float = -1.0
-    step_penalty: float = -0.1
-    invalid_call_penalty: float = -0.5
-    semantic_bonus: float = 0.2
-    latency_threshold: float = 0.5
-    wrong_tool_penalty: float = -0.3
-    extra_step_penalty: float = -0.15
+    success_reward: float = 5.0
+    failure_penalty: float = 0.0
+    step_penalty: float = -0.01
+    invalid_call_penalty: float = -0.1
+    semantic_bonus: float = 0.5
+    latency_threshold: float = 1.0
+    wrong_tool_penalty: float = -0.2
+    extra_step_penalty: float = -0.05
 
 
 class Config:
-    """Главный конфигурационный класс"""
-
     def __init__(self):
         print("\n" + "=" * 60)
-        print("ИНИЦИАЛИЗАЦИЯ КОНФИГУРАЦИИ")
+        print("INITIALIZING CONFIGURATION")
         print("=" * 60)
 
         self.network = NetworkConfig()
@@ -66,41 +63,70 @@ class Config:
         self.rl = RLConfig()
         self.reward = RewardConfig()
 
-        # Модель для обучения
-        self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        self.model_name = os.getenv('MODEL_NAME', '')
+        self.openai_base_url = os.getenv('BASE_URL', '')
+        self.openai_api_token = os.getenv('API_TOKEN', '')
+        self.system_prompt = os.getenv('SYSTEM_PROMPT', 'You are a helpful AI assistant.')
+        self.user_prompt = os.getenv('USER_PROMPT', '')
+        self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
+        self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '60.0'))
+        #self.use_local_model = os.getenv('USE_LOCAL_MODEL', 'true').lower() == 'true'
 
-        # Загружаем данные из ToolBench
-        print("\n📊 ЗАГРУЗКА ДАННЫХ ИЗ TOOLBENCH")
+        self.tools = []
+        self.prompts = []
+        self.train_prompts = []
+        self.val_prompts = []
+        self.loader = None
+        self.tool_selector = None
+
+        self._validate()
+
+        print(f"Configuration loaded:")
+        print(f"  Model: {self.model_name}")
+        print(f"  Base URL: {self.openai_base_url or 'local model'}")
+        print(f"  Learning rate: {self.rl.learning_rate}")
+        print(f"  Batch size: {self.rl.batch_size}")
+        #print(f"  Use local model: {self.use_local_model}")
+
+    def _validate(self):
+        if not self.model_name:
+            print("Warning: MODEL_NAME not set, using default")
+
+    def load_data(self):
+        from src.data.toolbench_loader import ToolBenchLoader
+        from src.tools.tool_selector import ToolSelector
+
+        print("\n" + "-" * 30)
+        print("LOADING TOOLBENCH DATA")
+        print("-" * 30)
+
         self.loader = ToolBenchLoader(
             split=self.toolbench.split,
             sample_size=self.toolbench.sample_size
         )
 
-        # Создаем селектор инструментов
-        print("\n🎯 СОЗДАНИЕ СЕЛЕКТОРА ИНСТРУМЕНТОВ")
-        self.tool_selector = ToolSelector(self.loader.tools)
+        print("\n" + "=" * 60)
+        print("CREATING TOOL SELECTOR")
+        print("=" * 60)
 
-        # Выводим статистику по категориям
+        self.tool_selector = ToolSelector(self.loader.tools)
         self.tool_selector.print_category_stats()
 
-        # Выбираем инструменты для обучения
-        print(f"\n🔧 ВЫБОРКА {self.toolbench.num_tools} ИНСТРУМЕНТОВ ДЛЯ ОБУЧЕНИЯ")
+        print(f"\n" + "=" * 60)
+        print(f"SELECTING {self.toolbench.num_tools} TOOLS FOR TRAINING")
+        print("=" * 60)
 
-        # Стратегия выборки: смесь популярных и специализированных инструментов
         selected_tools = []
+        tools_per_category = max(5, self.toolbench.num_tools // 10)
 
-        # 1. Берем инструменты из каждой категории
-        tools_per_category = max(5, self.toolbench.num_tools // 10)  # ~10 категорий
         for category, data in self.tool_selector.CATEGORIES.items():
             if data['tools']:
                 category_tools = data['tools'][:tools_per_category]
                 selected_tools.extend(category_tools)
-                print(f"   {category}: взято {len(category_tools)} инструментов")
+                print(f"   {category}: selected {len(category_tools)} tools")
 
-        # 2. Если не хватает, добавляем популярные инструменты
         if len(selected_tools) < self.toolbench.num_tools:
             remaining = self.toolbench.num_tools - len(selected_tools)
-            # Берем инструменты с самыми длинными описаниями (более информативные)
             sorted_tools = sorted(
                 self.loader.tools,
                 key=lambda x: len(x.get('description', '')),
@@ -112,66 +138,65 @@ class Config:
                     remaining -= 1
                     if remaining == 0:
                         break
-            print(f"   добавлено {remaining} популярных инструментов")
+            print(f"   added {self.toolbench.num_tools - len(selected_tools) + remaining} popular tools")
 
         self.tools = selected_tools[:self.toolbench.num_tools]
-        print(f"\n✅ ИТОГО: {len(self.tools)} инструментов отобрано")
 
-        # Показываем распределение по категориям
+        # Добавляем fallback инструменты
+        fallback_tools = [
+            {
+                "name": "Calculator.Evaluate",
+                "category": "math",
+                "description": "Evaluate mathematical expressions and arithmetic operations like 2+2, 10*5, sqrt(16), 100/4. Supports basic arithmetic (+, -, *, /), exponents, and common math functions.",
+                "method": "GET",
+                "required_parameters": [{"name": "expression", "type": "string", "description": "Mathematical expression to evaluate"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "General.NoToolNeeded",
+                "category": "general",
+                "description": "Use when the query doesn't require any external tool call. For simple questions, greetings, or requests that can be answered directly without API calls.",
+                "method": "GET",
+                "required_parameters": [],
+                "optional_parameters": []
+            }
+        ]
+
+        self.tools.extend(fallback_tools)
+        print(f"\nTotal: {len(self.tools)} tools selected (including {len(fallback_tools)} fallback tools)")
+
         category_distribution = {}
         for tool in self.tools:
             cat = tool.get('category', 'Unknown')
             category_distribution[cat] = category_distribution.get(cat, 0) + 1
 
-        print("\n📊 РАСПРЕДЕЛЕНИЕ ПО КАТЕГОРИЯМ:")
+        print("\nCATEGORY DISTRIBUTION:")
         for cat, count in sorted(category_distribution.items(), key=lambda x: x[1], reverse=True)[:10]:
-            print(f"   {cat}: {count} инструментов")
+            print(f"   {cat}: {count} tools")
 
-        # Получаем промпты для обучения
-        print("\n📝 ПОДГОТОВКА ПРОМПТОВ ДЛЯ ОБУЧЕНИЯ")
-        self.prompts = self.loader.get_training_prompts()
+        print("\n" + "=" * 60)
+        print("PREPARING TRAINING PROMPTS")
+        print("=" * 60)
 
-        # Фильтруем промпты, оставляя только те, для которых есть инструменты
+        all_prompts = self.loader.get_training_prompts()
+
         valid_prompts = []
         tool_names = {t['name'] for t in self.tools}
 
-        for prompt in self.prompts:
-            # Проверяем, есть ли релевантные инструменты в нашем наборе
+        for prompt in all_prompts:
             relevant = [t for t in prompt.get('relevant_tools', []) if t['name'] in tool_names]
             if relevant:
                 prompt['relevant_tools'] = relevant
                 valid_prompts.append(prompt)
 
-        self.prompts = valid_prompts
-        print(f"   Всего промптов: {len(self.prompts)}")
-        print(f"   Промптов с релевантными инструментами: {len(valid_prompts)}")
+        split_idx = int(len(valid_prompts) * 0.8)
+        self.train_prompts = valid_prompts[:split_idx]
+        self.val_prompts = valid_prompts[split_idx:]
+        self.prompts = self.train_prompts
 
-        print("\n" + "=" * 60)
-        print("✅ КОНФИГУРАЦИЯ ЗАВЕРШЕНА")
-        print("=" * 60)
+        print(f"   Total prompts: {len(valid_prompts)}")
+        print(f"   Train prompts: {len(self.train_prompts)}")
+        print(f"   Val prompts: {len(self.val_prompts)}")
 
     def get_tools_by_category(self, category: str) -> List[Dict]:
-        """Получение инструментов по категории"""
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]
-
-    def get_tools_for_query(self, query: str, num_tools: int = 20) -> List[Dict]:
-        """Получение инструментов, подходящих для конкретного запроса"""
-        return self.tool_selector.select_tools_for_query(query, num_tools)
-
-    """def print_config_summary(self):
-        ""Вывод сводки по конфигурации""
-        print("\n" + "=" * 60)
-        print("📋 СВОДКА КОНФИГУРАЦИИ")
-        print("=" * 60)
-        print(f"Модель: {self.model_name}")
-        print(f"Режим: {self.toolbench.split}")
-        print(f"Примеров в датасете: {len(self.loader.data)}")
-        print(f"Всего инструментов: {len(self.loader.tools)}")
-        print(f"Отобрано инструментов: {len(self.tools)}")
-        print(f"Промптов для обучения: {len(self.prompts)}")
-        print(f"\nПараметры RL:")
-        print(f"  - Эпох: {self.rl.num_epochs}")
-        print(f"  - Batch size: {self.rl.batch_size}")
-        print(f"  - Learning rate: {self.rl.learning_rate}")
-        print(f"  - Max steps: {self.rl.max_steps}")
-        print("=" * 60)"""
