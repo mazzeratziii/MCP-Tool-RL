@@ -25,6 +25,10 @@ def main():
                         help="Hardware profile. Auto-detected if omitted.")
     parser.add_argument("--eval-episodes", type=int, default=200,
                         help="Number of episodes for evaluate mode")
+    parser.add_argument("--use-hybrid", action="store_true",
+                        help="Use hybrid mode: real MCP calls + emulation")
+    parser.add_argument("--mcp-config", default="mcp_config.json",
+                        help="Path to MCP configuration file")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -59,7 +63,18 @@ def main():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-    trainer = NetMCPTrainer(config)
+    # ── Выбор режима: гибридный или эмуляция ──────────────────────────
+    if args.use_hybrid:
+        print("\n" + "=" * 60)
+        print("HYBRID MODE: Real MCP + Emulation")
+        print("=" * 60)
+        from src.rl.train_grpo_hybrid import HybridMCPTrainer
+        trainer = HybridMCPTrainer(config, mcp_config_path=args.mcp_config)
+    else:
+        print("\n" + "=" * 60)
+        print("EMULATION MODE: All tools emulated")
+        print("=" * 60)
+        trainer = NetMCPTrainer(config)
 
     if args.checkpoint and os.path.exists(args.checkpoint):
         try:

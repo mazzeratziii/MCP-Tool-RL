@@ -141,7 +141,29 @@ class Config:
             print(f"   added {self.toolbench.num_tools - len(selected_tools) + remaining} popular tools")
 
         self.tools = selected_tools[:self.toolbench.num_tools]
-        print(f"\nTotal: {len(self.tools)} tools selected")
+
+        # Добавляем fallback инструменты
+        fallback_tools = [
+            {
+                "name": "Calculator.Evaluate",
+                "category": "math",
+                "description": "Evaluate mathematical expressions and arithmetic operations like 2+2, 10*5, sqrt(16), 100/4. Supports basic arithmetic (+, -, *, /), exponents, and common math functions.",
+                "method": "GET",
+                "required_parameters": [{"name": "expression", "type": "string", "description": "Mathematical expression to evaluate"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "General.NoToolNeeded",
+                "category": "general",
+                "description": "Use when the query doesn't require any external tool call. For simple questions, greetings, or requests that can be answered directly without API calls.",
+                "method": "GET",
+                "required_parameters": [],
+                "optional_parameters": []
+            }
+        ]
+
+        self.tools.extend(fallback_tools)
+        print(f"\nTotal: {len(self.tools)} tools selected (including {len(fallback_tools)} fallback tools)")
 
         category_distribution = {}
         for tool in self.tools:

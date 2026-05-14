@@ -1,14 +1,24 @@
 def get_dynamic_prompt(query, tools):
-    """Создает промпт с актуальным списком инструментов и примерами"""
+    """Создает промпт с актуальным списком инструментов, их описанием и сетевыми метриками"""
 
-    # Формируем список доступных инструментов
+    # Формируем список доступных инструментов с сетевыми метриками
     tools_text = ""
     tool_names = []
     for i, tool in enumerate(tools[:5], 1):
         tool_names.append(tool['name'])
         tools_text += f"{i}. {tool['name']}\n"
         tools_text += f"   Описание: {tool['description']}\n"
-        tools_text += f"   Категория: {tool['category']}\n\n"
+        tools_text += f"   Категория: {tool['category']}\n"
+
+        # Добавляем сетевые метрики
+        available = tool.get('available', True)
+        latency = tool.get('latency', 0.15)
+        stability = tool.get('stability', 1.0)
+
+        status = "✓ доступен" if available else "✗ недоступен"
+        latency_label = "быстрый" if latency < 0.2 else "средний" if latency < 0.4 else "медленный"
+
+        tools_text += f"   Статус: {status} | Задержка: {latency:.3f}s ({latency_label}) | Стабильность: {stability:.2f}\n\n"
 
     # Создаем примеры на основе реальных инструментов
     examples = []
@@ -29,7 +39,7 @@ def get_dynamic_prompt(query, tools):
     prompt = f"""You are an AI assistant that helps users by calling the appropriate tools.
 You MUST respond ONLY with <tool_call>tool_name</tool_call> format, nothing else.
 
-Available tools:
+Available tools (with network metrics):
 
 {tools_text}
 
@@ -43,6 +53,8 @@ IMPORTANT RULES:
 3. Do NOT add any other text, explanations, or punctuation
 4. NEVER respond with "tool_name" - use the actual tool names from the list
 5. If no tool is appropriate, respond with <tool_call>none</tool_call>
+6. PREFER tools with lower latency and higher stability when multiple tools are relevant
+7. AVOID unavailable tools (✗ недоступен) unless absolutely necessary
 
 User: {query}
 Assistant: """

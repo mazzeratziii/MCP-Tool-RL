@@ -32,6 +32,16 @@ class NetworkEmulator:
         # Управляемые параметры (можно менять во время работы)
         self.active_servers = {}  # Состояние серверов
 
+        # НОВОЕ: Детерминированные сценарии для разнообразия
+        self.scenarios = {
+            "normal": {"base_latency": 0.15, "availability": 0.98, "congestion": 1.0},
+            "peak_hours": {"base_latency": 0.35, "availability": 0.95, "congestion": 1.8},
+            "network_issues": {"base_latency": 0.55, "availability": 0.70, "congestion": 2.2},
+            "optimal": {"base_latency": 0.08, "availability": 0.99, "congestion": 0.6},
+        }
+        self.current_scenario = "normal"
+        self._scenario_step = 0
+
     def set_mode(self, mode: NetworkMode):
         """Переключение режима работы"""
         self.mode = mode
@@ -58,6 +68,24 @@ class NetworkEmulator:
         self.packet_loss = 0.02
         self.jitter = 0.01
         print("Network params reset to defaults")
+
+    def set_scenario(self, scenario_name: str):
+        """НОВОЕ: Установка сетевого сценария"""
+        if scenario_name in self.scenarios:
+            self.current_scenario = scenario_name
+            scenario = self.scenarios[scenario_name]
+            self.base_latency = scenario["base_latency"]
+            self.congestion = scenario["congestion"]
+            print(f"Network scenario set to: {scenario_name}")
+        else:
+            print(f"Unknown scenario: {scenario_name}")
+
+    def rotate_scenario(self):
+        """НОВОЕ: Циклическая смена сценариев для разнообразия"""
+        scenario_names = list(self.scenarios.keys())
+        current_idx = scenario_names.index(self.current_scenario)
+        next_idx = (current_idx + 1) % len(scenario_names)
+        self.set_scenario(scenario_names[next_idx])
 
     def update_network_state(self):
         """Обновление состояния сети в зависимости от режима"""
@@ -96,8 +124,13 @@ class NetworkEmulator:
             }
 
         if self.mode == NetworkMode.DETERMINISTIC:
-            # Фиксированная доступность
-            self.server_states[server_name]['available'] = True
+            # УЛУЧШЕНО: Используем сценарий для определения доступности
+            scenario = self.scenarios[self.current_scenario]
+            availability_threshold = scenario["availability"]
+
+            # Детерминированная доступность на основе хеша имени сервера
+            server_hash = hash(server_name) % 100
+            self.server_states[server_name]['available'] = (server_hash / 100.0) < availability_threshold
             self.server_states[server_name]['load'] = 0.5
 
         elif self.mode == NetworkMode.CONTROLLED:
@@ -128,17 +161,19 @@ class NetworkEmulator:
         """
         # Базовые значения в зависимости от режима
         if self.mode == NetworkMode.DETERMINISTIC:
-            # Фиксированная задержка для каждого сервера
+            # УЛУЧШЕНО: Используем сценарий + детерминированное распределение
+            scenario = self.scenarios[self.current_scenario]
+            scenario_base = scenario["base_latency"]
+
             if server_name not in self.latency_history:
                 self.latency_history[server_name] = []
 
-            # Разные серверы имеют разную базовую задержку (но фиксированную)
-            # Используем хеш для детерминированного распределения
-            server_idx = hash(server_name) % 3
-            server_latency_map = {0: 0.12, 1: 0.15, 2: 0.18}
-            base = server_latency_map.get(server_idx, 0.15)
-
-            total_latency = base
+            # Разные серверы имеют разную задержку относительно базовой сценария
+            # Используем хеш для детерминированного распределения: ±30% от базовой
+            server_hash = hash(server_name) % 100
+            variation = (server_hash / 100.0 - 0.5) * 0.6  # от -0.3 до +0.3
+            total_latency = scenario_base * (1.0 + variation)
+            total_latency = max(0.05, total_latency)  # минимум 50ms
 
         elif self.mode == NetworkMode.CONTROLLED:
             # Предсказуемая задержка с историей

@@ -64,7 +64,7 @@ PROFILES: Dict[str, HWProfile] = {
         top_k_tools     = 20,
         max_ctx_len     = 512,
         entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
-        semantic_bias   = 3.0,
+        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
         warmup_steps    = 100,
         grad_clip       = 0.5,
         use_double_quant= False,   # not needed on 8 GB
@@ -81,7 +81,7 @@ PROFILES: Dict[str, HWProfile] = {
         top_k_tools     = 15,    # 20→15: fewer tool embeds (~25% faster)
         max_ctx_len     = 256,   # 320→256: shorter context saves attention time
         entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
-        semantic_bias   = 3.0,
+        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
         warmup_steps    = 80,
         grad_clip       = 0.5,
         use_double_quant= True,
@@ -220,6 +220,10 @@ class NetMCPTrainer:
         candidates = self.env.tools.get_top_k_tools(
             self.env.current_query, k=self.p.top_k_tools
         )
+
+        # Минимальный порог релевантности для фильтрации
+        MIN_SEMANTIC_THRESHOLD = 0.70
+
         tools_state = []
         for tool in candidates:
             sv = self.env.network.get_server_state(tool["name"])
@@ -227,6 +231,11 @@ class NetMCPTrainer:
             sem = self.env.tools.semantic_similarity(
                 self.env.current_query, tool["name"]
             )
+
+            # Пропускаем инструменты с низкой релевантностью
+            if sem < MIN_SEMANTIC_THRESHOLD:
+                continue
+
             is_rel = any(rt["name"] == tool["name"] for rt in self.env.relevant_tools)
             tools_state.append({
                 "name": tool["name"],
@@ -319,12 +328,23 @@ class NetMCPTrainer:
                 self.env.reset(prompt)
                 _, _, _, info = self.env.step(tool_name)
 
+                # Вычисляем относительные метрики для reward
+                avg_latency = sum(t['latency'] for t in state['tools']) / len(state['tools'])
+                availability_ratio = sum(1 for t in state['tools'] if t['available']) / len(state['tools'])
+
+                # Получаем метрики выбранного инструмента
+                selected_tool = state['tools'][idx.item()]
+
                 reward = self.reward_fn.compute_outcome_reward(
                     success=info.get("success", False),
                     steps=1,
                     is_relevant=info.get("is_relevant", False),
                     latency=info.get("latency", 0.0),
                     semantic_score=info.get("semantic_score", 0.0),
+                    available=selected_tool.get("available", True),
+                    stability=selected_tool.get("stability", 1.0),
+                    avg_latency=avg_latency,
+                    availability_ratio=availability_ratio,
                 )
                 rollouts.append({
                     "tool_idx": idx.item(),
@@ -410,13 +430,18 @@ class NetMCPTrainer:
         best_relevance = 0.0
 
         for epoch in range(1, self.config.rl.num_epochs + 1):
+            # НОВОЕ: Ротация сценариев каждые 5 эпох для разнообразия
+            if epoch % 5 == 1:
+                self.env.network.rotate_scenario()
+                print(f"\n--- Epoch {epoch} [scenario: {self.env.network.current_scenario}] ---")
+
             # Resample train set for diversity
             if epoch % self.p.resample_every == 1:
                 self.train_set = random.sample(
                     self._train_pool,
                     min(self.p.train_set_size, len(self._train_pool))
                 )
-                print(f"\n--- Epoch {epoch} [resample → {len(self.train_set)} queries] ---")
+                print(f"    [resample → {len(self.train_set)} queries]")
             else:
                 print(f"\n--- Epoch {epoch}/{self.config.rl.num_epochs} ---")
 
@@ -489,6 +514,11 @@ class NetMCPTrainer:
         success_t = relevant_t = total_t = 0
         top3_relevant_t = 0   # relevant tool appears in model's top-3
 
+        # НОВОЕ: Метрики для оценки адаптации к сети
+        total_latency = 0.0
+        fast_tool_choices = 0  # выбран инструмент быстрее среднего
+        available_tool_choices = 0  # выбран доступный инструмент
+
         self.model.eval()
         with torch.inference_mode():
             for prompt in selected:
@@ -506,6 +536,18 @@ class NetMCPTrainer:
                 success_t  += int(info.get("success", False))
                 relevant_t += int(info.get("is_relevant", False))
 
+                # НОВОЕ: Сбор метрик адаптации к сети
+                latency = info.get("latency", 0.0)
+                total_latency += latency
+
+                avg_latency = sum(t['latency'] for t in state['tools']) / len(state['tools'])
+                if latency < avg_latency:
+                    fast_tool_choices += 1
+
+                selected_tool = state['tools'][top1_idx]
+                if selected_tool.get('available', True):
+                    available_tool_choices += 1
+
                 # Top-3 accuracy: check if any of top-3 is relevant
                 top3_indices = logits.topk(min(3, len(tools))).indices.tolist()
                 relevant_names = {t["name"] for t in state["tools"]
@@ -516,11 +558,15 @@ class NetMCPTrainer:
         self.model.train()
         self.env.set_network_mode(NetworkMode.DETERMINISTIC)
         n = max(total_t, 1)
-        print(f"  Episodes:      {total_t}")
-        print(f"  Success rate:  {success_t/n:.2%}")
-        print(f"  Relevance@1:   {relevant_t/n:.2%}   (greedy top-1)")
-        print(f"  Relevance@3:   {top3_relevant_t/n:.2%}  (relevant in top-3)")
-        print(f"  Top-3 gap:     {(top3_relevant_t - relevant_t)/n:+.2%}")
+        print(f"  Episodes:           {total_t}")
+        print(f"  Success rate:       {success_t/n:.2%}")
+        print(f"  Relevance@1:        {relevant_t/n:.2%}   (greedy top-1)")
+        print(f"  Relevance@3:        {top3_relevant_t/n:.2%}  (relevant in top-3)")
+        print(f"  Top-3 gap:          {(top3_relevant_t - relevant_t)/n:+.2%}")
+        print(f"\n  Network Adaptation Metrics:")
+        print(f"  Avg latency:        {total_latency/n:.3f}s")
+        print(f"  Fast tool choices:  {fast_tool_choices/n:.2%}  (below avg latency)")
+        print(f"  Available choices:  {available_tool_choices/n:.2%}  (chose available tools)")
 
     # ------------------------------------------------------------------
     # Checkpoint save / load

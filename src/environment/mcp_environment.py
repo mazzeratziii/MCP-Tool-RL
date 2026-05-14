@@ -111,6 +111,12 @@ class MCPEnvironment:
                 {'error': f'Invalid tool: {action}'}
             )
 
+        # Обработка fallback инструментов
+        if action == "Calculator.Evaluate":
+            return self._handle_calculator(tool)
+        elif action == "General.NoToolNeeded":
+            return self._handle_no_tool_needed(tool)
+
         server_state = self.network.get_server_state(tool['name'])
         if not server_state['available']:
             return (
@@ -248,3 +254,80 @@ Rules:
             reward -= 0.4
 
         return reward
+
+    def _handle_calculator(self, tool: Dict) -> Tuple[Dict[str, Any], float, bool, Dict]:
+        """Обработка Calculator.Evaluate"""
+        import re
+
+        # Проверяем, содержит ли запрос математическое выражение
+        math_pattern = r'[\d\+\-\*/\(\)\.\s]+'
+        has_math = bool(re.search(r'\d+\s*[\+\-\*/]\s*\d+', self.current_query))
+
+        latency = 0.05  # Быстрая операция
+        is_relevant = has_math
+        success = True
+
+        # Пытаемся вычислить результат
+        result = "Calculator result"
+        try:
+            # Извлекаем математическое выражение
+            expr_match = re.search(r'([\d\+\-\*/\(\)\.\s]+)', self.current_query)
+            if expr_match:
+                expr = expr_match.group(1).strip()
+                # Безопасное вычисление (только базовые операции)
+                if all(c in '0123456789+-*/(). ' for c in expr):
+                    result = f"Result: {eval(expr)}"
+        except:
+            result = "Could not evaluate expression"
+            success = False
+
+        reward = 3.0 if (success and is_relevant) else -0.5
+
+        info = {
+            'latency': latency,
+            'success': success,
+            'is_relevant': is_relevant,
+            'tool_used': 'Calculator.Evaluate',
+            'tool_category': 'math',
+            'step': self.step_count,
+            'response': result,
+            'result': result,
+            'semantic_score': 0.95 if has_math else 0.3
+        }
+
+        return self._get_current_state(), reward, True, info
+
+    def _handle_no_tool_needed(self, tool: Dict) -> Tuple[Dict[str, Any], float, bool, Dict]:
+        """Обработка General.NoToolNeeded"""
+        # Проверяем, действительно ли запрос не требует инструмента
+        # Простые вопросы, приветствия и т.д.
+        simple_patterns = [
+            r'^(hi|hello|hey|thanks|thank you)',
+            r'^(what|who|when|where|why|how)\s+(is|are|was|were)',
+            r'(explain|tell me|describe)',
+        ]
+
+        is_simple = any(re.search(pattern, self.current_query.lower()) for pattern in simple_patterns)
+
+        # Проверяем, что нет других релевантных инструментов
+        has_relevant_tools = len(self.relevant_tools) > 0
+
+        latency = 0.02
+        is_relevant = is_simple and not has_relevant_tools
+        success = True
+
+        reward = 2.0 if is_relevant else -1.0
+
+        info = {
+            'latency': latency,
+            'success': success,
+            'is_relevant': is_relevant,
+            'tool_used': 'General.NoToolNeeded',
+            'tool_category': 'general',
+            'step': self.step_count,
+            'response': 'No external tool needed for this query',
+            'result': 'No external tool needed for this query',
+            'semantic_score': 0.8 if is_simple else 0.2
+        }
+
+        return self._get_current_state(), reward, True, info

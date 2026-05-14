@@ -1,0 +1,41 @@
+{
+  "description": "Mapping of ToolBench tools to real MCP servers (no API keys required)",
+  "version": "1.0",
+  "tools": {
+    "calculator.evaluate": {
+      "mcp_server": "python -m mcp_servers.calculator",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Evaluate mathematical expressions"
+    },
+    "wikipedia.search": {
+      "mcp_server": "python -m mcp_servers.wikipedia",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Search Wikipedia articles"
+    },
+    "wikipedia.get_article": {
+      "mcp_server": "python -m mcp_servers.wikipedia",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Get Wikipedia article content"
+    },
+    "http.get": {
+      "mcp_server": "python -m mcp_servers.http_client",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Make HTTP GET requests"
+    },
+    "http.post": {
+      "mcp_server": "python -m mcp_servers.http_client",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Make HTTP POST requests"
+    }
+  },
+  "notes": {
+    "enabled_tools": "5 real MCP tools (no API keys required)",
+    "emulated_tools": "~14,995 emulated tools from ToolBench",
+    "how_to_add_more": "See API_KEYS_GUIDE.md for tools that require API keys"
+  }
+}

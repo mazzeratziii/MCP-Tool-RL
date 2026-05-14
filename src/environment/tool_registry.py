@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from src.config import Config
+from src.environment.query_classifier import QueryClassifier
 
 
 class ToolRegistry:
@@ -27,8 +28,11 @@ class ToolRegistry:
         self._name_to_tool: Dict[str, Dict] = {t["name"]: t for t in self.tools}
         self._name_to_idx: Dict[str, int] = {t["name"]: i for i, t in enumerate(self.tools)}
 
+        # Инициализируем классификатор запросов
+        self.query_classifier = QueryClassifier()
+
         print("Loading embedding model...")
-        self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+        self.encoder = SentenceTransformer("models/retriever")
         print("Embedding model loaded")
 
         print(f"Encoding {len(self.tools)} tools in batch...")
@@ -112,13 +116,32 @@ class ToolRegistry:
         """
         Fast top-k via a single matrix–vector multiply.
         Much faster than calling semantic_similarity N times.
+
+        Автоматически добавляет fallback инструменты если они релевантны.
         """
         q_emb = self._encode_query(query)                      # (d,)
         scores = self._tool_matrix @ q_emb                     # (n,)
         k = min(k, len(self.tools))
         top_indices = np.argpartition(scores, -k)[-k:]         # unsorted top-k
         top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]  # sort desc
-        return [self.tools[i] for i in top_indices]
+
+        results = [self.tools[i] for i in top_indices]
+
+        # Проверяем, нужен ли fallback инструмент
+        fallback_info = self.query_classifier.should_add_fallback_to_candidates(query, results)
+
+        if fallback_info:
+            fallback_tool_name = fallback_info["name"]
+            fallback_tool = self._name_to_tool.get(fallback_tool_name)
+
+            if fallback_tool and fallback_tool not in results:
+                # Добавляем fallback инструмент в начало списка с высоким приоритетом
+                results.insert(0, fallback_tool)
+                # Удаляем последний инструмент, чтобы сохранить размер k
+                if len(results) > k:
+                    results = results[:k]
+
+        return results
 
     def format_tool_for_prompt(self, tool: Dict) -> str:
         lines = [
