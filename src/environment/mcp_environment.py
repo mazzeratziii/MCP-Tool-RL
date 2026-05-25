@@ -1,7 +1,8 @@
-# src/environment/mcp_environment.py
+# Окружение MCP
 import time
 import random
 import json
+import re
 from typing import Dict, Any, Tuple, Optional
 
 from src.config import Config
@@ -11,11 +12,12 @@ from .tool_registry import ToolRegistry
 
 class MCPEnvironment:
     def __init__(self, config: Config, llm_client=None, network_mode: NetworkMode = NetworkMode.DETERMINISTIC):
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         self.config = config
         self.network = NetworkEmulator(config, mode=network_mode)
         self.llm_client = llm_client
 
-        # Ensure data is loaded before creating ToolRegistry
+        # Убеждаемся, что данные загружены до создания ToolRegistry
         if not config.tools:
             print("Loading data before creating environment...")
             config.load_data()
@@ -37,6 +39,7 @@ class MCPEnvironment:
         return self.network.get_network_stats()
 
     def reset(self, query_data: Optional[Dict] = None):
+        """?????????? ????????? ? ?????????????? ????? ??????."""
         self.step_count = 0
         self.used_tools = []
 
@@ -53,6 +56,7 @@ class MCPEnvironment:
         return self._get_current_state()
 
     def _get_random_query(self) -> Dict:
+        """????? ????????? prompt ?? ?????????? ?????? ??????."""
         if not self.config.tools:
             return {
                 'query': 'What is the weather today?',
@@ -67,12 +71,19 @@ class MCPEnvironment:
         }
 
     def _get_current_state(self) -> Dict[str, Any]:
+        """????????? ??????? ????????? ??????? ? candidate tools."""
         candidate_tools = self.tools.get_top_k_tools(self.current_query, k=10)
 
         tools_state = []
         for tool in candidate_tools:
             server_state = self.network.get_server_state(tool['name'])
             qos = self.network.get_qos_metrics(tool['name'])
+            total_calls = server_state.get('success_count', 0) + server_state.get('failure_count', 0)
+            observed_success_rate = (
+                server_state.get('success_count', 0) / total_calls
+                if total_calls > 0
+                else 1.0 - tool.get('failure_rate', self.config.network.failure_rate)
+            )
 
             is_relevant = any(rt['name'] == tool['name'] for rt in self.relevant_tools)
 
@@ -82,7 +93,9 @@ class MCPEnvironment:
                 'description': tool.get('description', '')[:50] + "...",
                 'available': server_state['available'],
                 'latency': qos['avg_latency'],
+                'jitter': qos.get('jitter', 0.0),
                 'stability': qos['stability'],
+                'success_rate': observed_success_rate,
                 'semantic_score': self.tools.semantic_similarity(self.current_query, tool['name']),
                 'is_relevant': is_relevant,
                 'used': tool['name'] in self.used_tools
@@ -127,10 +140,15 @@ class MCPEnvironment:
             )
 
         latency = self.network.get_current_latency(tool['name'], {'base_latency': tool.get('base_latency', 0.1)})
-        # time.sleep(latency * 0.01)  # закомментировано для ускорения обучения
+        # При необходимости можно включить задержку: time.sleep(latency * 0.01)
 
         success = random.random() > tool.get('failure_rate', 0.1)
         is_relevant = any(rt['name'] == action for rt in self.relevant_tools)
+        if success:
+            server_state['success_count'] = server_state.get('success_count', 0) + 1
+        else:
+            server_state['failure_count'] = server_state.get('failure_count', 0) + 1
+        server_state['avg_latency'] = latency
 
         reward = self._calculate_reward(tool, latency, success, is_relevant)
         response = self._generate_response(tool, success, is_relevant)
@@ -156,6 +174,7 @@ class MCPEnvironment:
         return self._get_current_state(), reward, done, info
 
     def _generate_response(self, tool: Dict, success: bool, is_relevant: bool) -> str:
+        """????????? ????? ????? ?????? ???????????."""
         if not success:
             return f"Tool '{tool.get('name', 'unknown')}' could not process the request due to network or server error."
 
@@ -192,7 +211,7 @@ Rules:
             except Exception as e:
                 print(f"[Warning] LLM generation failed: {e}")
 
-        # Fallback
+        # Резервный ответ
         return self._fallback_response(tool_info)
 
     def _fallback_response(self, tool_info: Dict) -> str:
@@ -203,14 +222,14 @@ Rules:
             f"Description: {tool_info['description'][:150]}..."
         ]
 
-        # Required parameters
+        # Обязательные параметры
         req = tool_info.get('required_parameters', [])
         if req:
             param_names = [p.get('name', str(p)) if isinstance(p, dict) else str(p) for p in req[:5]]
             if param_names:
                 lines.append(f"Required: {', '.join(param_names)}")
 
-        # Optional parameters
+        # Необязательные параметры
         opt = tool_info.get('optional_parameters', [])
         if opt:
             param_names = [p.get('name', str(p)) if isinstance(p, dict) else str(p) for p in opt[:3]]

@@ -1,115 +1,105 @@
-# Изменения в MCP-Tool-RL v2
+# Изменения
 
-## Цель
-Научить модель выбирать оптимальные инструменты с учётом метрик сети (latency, availability, stability).
+## Adaptive Selection Baseline
 
-## Ключевые улучшения
+Добавлен лёгкий библиотечный selector, независимый от тяжёлой GRPO-модели:
 
-### 1. Сетевые метрики в промпте (`src/prompts.py`)
-**Проблема**: Модель не видела состояние сети, поэтому не могла научиться адаптации.
+- семантическая фильтрация ToolBench-кандидатов;
+- функциональное intent-сопоставление;
+- QoS-aware scoring по latency, jitter/stability, availability, success rate и retry history;
+- обновление статистики выполнения через exponential moving average.
 
-**Решение**: Добавлены метрики в контекст:
-- Статус доступности (✓/✗)
-- Задержка (latency) с метками: быстрый/средний/медленный
-- Стабильность (stability score)
-- Инструкции модели предпочитать быстрые и доступные инструменты
+Новые файлы:
 
-### 2. Улучшенная reward function (`src/rl/reward_functions.py`)
-**Проблема**: Награда не учитывала относительные сетевые характеристики.
+- `src/selection/adaptive_selector.py`
+- `src/selection/intent.py`
+- `src/selection/tool_features.py`
+- `src/selection/benchmark.py`
+- `src/selection/log_analysis.py`
+- `src/selection/__init__.py`
 
-**Решение**: Добавлены новые компоненты:
-- **Относительный бонус за скорость**: +0.8 если выбран инструмент на 20%+ быстрее среднего
-- **Штраф за недоступность**: -1.5 за выбор недоступного инструмента
-- **Бонус за адаптацию**: +0.8 за выбор доступного при проблемах с сетью (availability < 70%)
-- **Штраф за нестабильность**: -0.3 * (0.8 - stability) если stability < 0.8
+## Benchmark и анализ
 
-### 3. Детерминированные сценарии (`src/environment/network_emulator.py`)
-**Проблема**: DETERMINISTIC режим был слишком статичным — все серверы всегда доступны с одинаковой latency.
+Добавлено:
 
-**Решение**: Добавлены 4 сценария с разными условиями:
-- **normal**: latency=0.15s, availability=98%, congestion=1.0
-- **peak_hours**: latency=0.35s, availability=95%, congestion=1.8
-- **network_issues**: latency=0.55s, availability=70%, congestion=2.2
-- **optimal**: latency=0.08s, availability=99%, congestion=0.6
+- `python main.py --mode benchmark`;
+- `python main.py --mode analyze-log`;
+- JSONL-логи benchmark;
+- категории ошибок: retrieval miss / label gap, correct tool in top-3 but not top-1, selected too generic/specific, intent mismatch, execution failure, near duplicate or alias;
+- soft-correct метрика для alias и near-duplicate инструментов ToolBench.
 
-Сценарии автоматически ротируются каждые 5 эпох для разнообразия.
+## Reranker Features
 
-### 4. Передача метрик в reward (`src/rl/train_grpo.py`)
-**Изменения**:
-- Вычисление `avg_latency` и `availability_ratio` для каждой группы
-- Передача метрик выбранного инструмента в `compute_outcome_reward()`
-- Ротация сценариев каждые 5 эпох
+Добавлен консервативный текстовый reranker:
 
-### 5. Новые метрики evaluation
-**Добавлены**:
-- **Avg latency**: средняя задержка выбранных инструментов
-- **Fast tool choices**: % случаев выбора инструмента быстрее среднего
-- **Available choices**: % случаев выбора доступного инструмента
+- разбор названия `Provider.Action`;
+- action overlap;
+- entity overlap;
+- generic tool penalty;
+- опциональный provider-group adjustment для ablation.
 
-## Как запустить
+Профиль по умолчанию:
 
-### Обучение с новыми улучшениями
 ```bash
-cd C:\Users\allmute\PycharmProjects\MCP-Tool-RL-v2
-python main.py --mode train --epochs 30 --profile desktop
+--rerank-weight 0.35 --provider-group-weight 0.0
 ```
 
-### Оценка с разными сетевыми режимами
+Агрессивный provider-profile выключен по умолчанию, потому что снизил качество benchmark на шумных названиях провайдеров ToolBench.
+
+## Надёжность environment и retriever
+
+Обновлено:
+
+- `src/environment/network_emulator.py` теперь отдаёт jitter;
+- `src/environment/mcp_environment.py` отдаёт success rate и jitter в tool state;
+- `src/environment/tool_registry.py` не падает, если в `models/retriever` есть конфиги, но нет весов;
+- `src/config.py` считает `python-dotenv` опциональной зависимостью.
+
+## CLI
+
+`main.py` теперь поддерживает:
+
+- `select`;
+- `benchmark`;
+- `analyze-log`;
+- `healthcheck`;
+- reranker ablation flags;
+- provider-group ablation flags;
+- `--verbose`, при этом обычные запуски скрывают шумные логи загрузки данных и моделей.
+
+## Воспроизводимость
+
+Добавлен:
+
+- `scripts/run_baselines.ps1` для запуска semantic/adaptive baseline и анализа логов.
+
+Текущий лучший baseline:
+
+| Профиль | Relevance@1 | Relevance@3 | Success | Avg reward |
+| --- | ---: | ---: | ---: | ---: |
+| adaptive conservative | 56% | 68% | 96% | 2.727 |
+| adaptive aggressive provider | 41% | 68% | 95% | 2.134 |
+
+Проект можно считать воспроизводимым исследовательским прототипом. Главное оставшееся ограничение — выбор одного инструмента для запросов, которым естественно требуется несколько инструментов.
+
+## Тесты
+
+Добавлены тесты для:
+
+- adaptive selector;
+- intent matching;
+- reranker features;
+- log analysis и soft-correct metrics.
+
+Запуск:
+
 ```bash
-# Контролируемые вариации
-python main.py --mode evaluate --checkpoint checkpoints/best --network-mode controlled
-
-# Стресс-тест со случайными условиями
-python main.py --mode evaluate --checkpoint checkpoints/best --network-mode stochastic
-
-# Детерминированные сценарии
-python main.py --mode evaluate --checkpoint checkpoints/best --network-mode deterministic
+python -m unittest tests.test_adaptive_selector tests.test_log_analysis tests.test_tool_features
 ```
+# Финальная доводка
 
-### Интерактивный режим
-```bash
-python main.py --mode interactive --checkpoint checkpoints/best
-```
-
-Команды в интерактиве:
-- `/network normal|peak_hours|network_issues|optimal` — переключение сценария
-- `/network stats` — статистика сети
-- `/eval 50` — быстрая оценка на 50 промптах
-
-## Ожидаемые результаты
-
-### До изменений
-- Модель выбирает инструменты только по семантике
-- Не учитывает latency и availability
-- Одинаковое поведение при любых сетевых условиях
-
-### После изменений
-- Модель учитывает сетевые метрики при выборе
-- Предпочитает быстрые инструменты при высокой latency
-- Избегает недоступных инструментов
-- Адаптируется к разным сценариям (normal/peak_hours/network_issues)
-
-## Следующие шаги
-
-1. **Обучить модель** на 30-40 эпохах с новыми изменениями
-2. **Сравнить метрики** с оригинальной версией:
-   - Relevance@1 (должна остаться ~на том же уровне)
-   - Fast tool choices (должна вырасти)
-   - Available choices (должна вырасти)
-   - Avg latency (должна снизиться)
-3. **Протестировать** на разных network_mode для проверки адаптации
-4. **Опционально**: Добавить wandb для визуализации метрик
-
-## Технические детали
-
-### Изменённые файлы
-- `src/prompts.py` — добавлены сетевые метрики в контекст
-- `src/rl/reward_functions.py` — улучшена reward function
-- `src/environment/network_emulator.py` — добавлены сценарии
-- `src/rl/train_grpo.py` — передача метрик, ротация сценариев, новые eval метрики
-
-### Обратная совместимость
-Все изменения обратно совместимы. Если метрики отсутствуют в state, используются значения по умолчанию.
-
-### Производительность
-Изменения не влияют на скорость обучения — все вычисления метрик выполняются один раз на группу.
+- Добавлен SONAR-style baseline как отдельная benchmark policy: `--benchmark-policy sonar`.
+- Добавлен общий режим сравнения: `--benchmark-policy all`.
+- Добавлен финальный скрипт проверки: `scripts/run_final_checks.ps1`.
+- Добавлен итоговый отчёт: `FINAL_REPORT.md`.
+- README дополнен финальными GRPO-метриками и командами проверки.

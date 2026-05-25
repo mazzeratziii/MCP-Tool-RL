@@ -1,14 +1,14 @@
 """
-Fine-tune sentence-transformer on (query, relevant_tool) pairs from ToolBench.
+Дообучает sentence-transformer на парах (query, relevant_tool) из ToolBench.
 
-Usage:
+Использование:
     python src/retriever/finetune_retriever.py
 
-Output: models/retriever/
-Then update ToolRegistry: SentenceTransformer('models/retriever')
+Выход: models/retriever/
+После этого ToolRegistry использует SentenceTransformer('models/retriever')
 
-Time: ~20-40 min laptop, ~10 min desktop.
-VRAM: ~2 GB (BERT-base is tiny).
+Время: примерно 20-40 минут на laptop, около 10 минут на desktop.
+VRAM: около 2 GB.
 """
 
 import sys, os, random
@@ -75,6 +75,7 @@ def build_synthetic_examples(tools_set):
 
 
 def build_examples(prompts, tools_set, split="train"):
+    """?????? ????????? ???? query-tool ??? fine-tuning retriever-?."""
     examples, skipped = [], 0
     for prompt in prompts:
         query = prompt.get("query", "").strip()
@@ -93,6 +94,7 @@ def build_examples(prompts, tools_set, split="train"):
 
 
 def main():
+    """????? ?????: ????????? ????????? CLI ? ????????? ????????? ?????."""
     print("Loading config and data...")
     config = Config()
     config.load_data()
@@ -123,7 +125,7 @@ def main():
     model = SentenceTransformer(BASE_MODEL)
     loss  = losses.MultipleNegativesRankingLoss(model)
 
-    # Evaluator on val pairs
+    # Оценщик на validation-парах
     queries, corpus, relevant_docs = {}, {}, {}
     for i, ex in enumerate(val_ex[:2000]):
         queries[f"q{i}"]       = ex.texts[0]

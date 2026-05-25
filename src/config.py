@@ -1,8 +1,13 @@
-# config.py
+# Конфигурация проекта
 import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        """???????? ??? optional python-dotenv, ???? ????? ?? ??????????."""
+        return False
 
 load_dotenv()
 
@@ -54,6 +59,7 @@ class RewardConfig:
 
 class Config:
     def __init__(self):
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         print("\n" + "=" * 60)
         print("INITIALIZING CONFIGURATION")
         print("=" * 60)
@@ -70,7 +76,7 @@ class Config:
         self.user_prompt = os.getenv('USER_PROMPT', '')
         self.max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
         self.min_request_timeout = float(os.getenv('MIN_REQUEST_TIMEOUT', '60.0'))
-        #self.use_local_model = os.getenv('USE_LOCAL_MODEL', 'true').lower() == 'true'
+        # Локальная модель может быть включена через USE_LOCAL_MODEL при необходимости
 
         self.tools = []
         self.prompts = []
@@ -86,13 +92,15 @@ class Config:
         print(f"  Base URL: {self.openai_base_url or 'local model'}")
         print(f"  Learning rate: {self.rl.learning_rate}")
         print(f"  Batch size: {self.rl.batch_size}")
-        #print(f"  Use local model: {self.use_local_model}")
+        # При необходимости можно вывести флаг использования локальной модели
 
     def _validate(self):
+        """????????? ??????????? ???????????? ????????????."""
         if not self.model_name:
             print("Warning: MODEL_NAME not set, using default")
 
     def load_data(self):
+        """????????? ToolBench, ??????????? ? train/validation prompts."""
         from src.data.toolbench_loader import ToolBenchLoader
         from src.tools.tool_selector import ToolSelector
 
@@ -199,4 +207,5 @@ class Config:
         print(f"   Val prompts: {len(self.val_prompts)}")
 
     def get_tools_by_category(self, category: str) -> List[Dict]:
+        """?????????? ??????????? ????????? ?????????."""
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]

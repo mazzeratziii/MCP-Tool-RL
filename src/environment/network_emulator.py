@@ -1,4 +1,4 @@
-# src/environment/network_emulator.py
+# Эмулятор сети
 import random
 import time
 import numpy as np
@@ -18,6 +18,7 @@ class NetworkEmulator:
     """Эмулятор сетевых условий с управляемыми параметрами"""
 
     def __init__(self, config: Config, mode: NetworkMode = NetworkMode.DETERMINISTIC):
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         self.config = config
         self.mode = mode
         self.server_states = {}
@@ -146,7 +147,7 @@ class NetworkEmulator:
                 self.active_servers[server_name] = True
                 self.server_states[server_name]['available'] = True
 
-        else:  # STOCHASTIC
+        else:  # случайный режим
             # Случайные отказы (исходное поведение)
             if random.random() < self.config.network.failure_rate:
                 self.server_states[server_name]['available'] = False
@@ -181,7 +182,7 @@ class NetworkEmulator:
             network_delay = base * self.congestion
             total_latency = network_delay
 
-        else:  # STOCHASTIC
+        else:  # случайный режим
             # Полностью случайная (исходное поведение)
             base = tool_config.get('base_latency', 0.1)
             network_delay = base * self.config.network.congestion_factor
@@ -205,16 +206,19 @@ class NetworkEmulator:
             return {
                 'avg_latency': 0.15,
                 'latency_variance': 0,
+                'jitter': 0.0,
                 'stability': 1.0
             }
 
         avg_latency = float(np.mean(history))
         latency_variance = float(np.var(history))
+        jitter = float(np.std(history))
         stability = 1.0 / (1.0 + latency_variance * 10)
 
         return {
             'avg_latency': avg_latency,
             'latency_variance': latency_variance,
+            'jitter': jitter,
             'stability': stability
         }
 

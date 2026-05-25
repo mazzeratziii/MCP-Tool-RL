@@ -1,4 +1,4 @@
-# src/environment/query_classifier.py
+# Классификатор запросов
 """
 Классификатор запросов для автоматического определения fallback инструментов
 """
@@ -13,6 +13,7 @@ class QueryClassifier:
 
     def __init__(self):
         # Паттерны для математических выражений
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         self.math_patterns = [
             r'\d+\s*[\+\-\*/]\s*\d+',  # 2 + 2, 10 * 5
             r'calculate|compute|solve|evaluate',
@@ -43,7 +44,7 @@ class QueryClassifier:
         """
         Классифицирует запрос и возвращает (fallback_tool, confidence)
 
-        Returns:
+        Возвращает:
             (tool_name, confidence) или (None, 0.0) если fallback не нужен
         """
         query_lower = query.lower().strip()
@@ -77,11 +78,11 @@ class QueryClassifier:
         """
         Определяет, нужно ли добавить fallback инструмент к кандидатам
 
-        Args:
+        Аргументы:
             query: запрос пользователя
             candidates: список инструментов-кандидатов
 
-        Returns:
+        Возвращает:
             fallback инструмент или None
         """
         fallback_tool, confidence = self.classify(query)

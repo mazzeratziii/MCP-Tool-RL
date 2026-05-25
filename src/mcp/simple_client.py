@@ -1,6 +1,6 @@
 """
-Simplified MCP Client for hybrid mode
-Works with simple Python-based MCP servers without requiring full MCP SDK
+Упрощённый MCP-клиент для гибридного режима
+Работает с простыми MCP-серверами на Python без полного MCP SDK
 """
 import json
 import subprocess
@@ -22,6 +22,7 @@ class SimpleMCPClient:
     """Упрощённый MCP клиент для Python серверов"""
 
     def __init__(self):
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         self.servers: Dict[str, subprocess.Popen] = {}
         self.metrics_history: Dict[str, List[MCPToolMetrics]] = {}
         self.tool_to_server: Dict[str, str] = {}
@@ -30,7 +31,7 @@ class SimpleMCPClient:
         """
         Регистрация MCP сервера
 
-        Args:
+        Аргументы:
             server_name: имя сервера (например, "calculator")
             server_command: команда запуска (например, ["python", "-m", "mcp_servers.calculator"])
         """
@@ -87,11 +88,11 @@ class SimpleMCPClient:
         """
         Синхронный вызов инструмента
 
-        Args:
+        Аргументы:
             tool_name: имя инструмента (например, "calculator.evaluate")
             arguments: аргументы для инструмента
 
-        Returns:
+        Возвращает:
             Dict с результатом: {success, error, latency, result}
         """
         server_name = self.tool_to_server.get(tool_name)

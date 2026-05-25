@@ -1,10 +1,7 @@
 """
 python -m src.rl.diagnose
 
-Runs without training — checks:
-1. What fraction of top-10 candidates actually contain a relevant tool
-2. Whether the model already prefers relevant tools (pre-training bias)
-3. Reward distribution
+Запускается без обучения и проверяет:`n1. Как часто top-10 кандидатов содержит релевантный инструмент`n2. Есть ли у модели исходное смещение в сторону релевантных инструментов`n3. Распределение награды
 """
 import random
 import sys
@@ -21,6 +18,7 @@ from src.prompts import get_dynamic_prompt
 
 
 def main():
+    """????? ?????: ????????? ????????? CLI ? ????????? ????????? ?????."""
     config = Config()
     config.load_data()
 
@@ -28,8 +26,7 @@ def main():
 
     pool = [p for p in config.prompts if p.get("relevant_tools")]
     sample = random.sample(pool, min(200, len(pool)))
-
-    # ── 1. Coverage: does top-10 contain the relevant tool? ──────────────
+    # 1.
     coverage_hits = 0
     for prompt in sample:
         state = env.reset(prompt)
@@ -41,8 +38,7 @@ def main():
     print(f"\n=== COVERAGE (top-10 contains relevant tool) ===")
     print(f"  {coverage_hits}/{len(sample)} = {coverage_hits/len(sample):.1%}")
     print(f"  → If this is < 50%, increase k in get_top_k_tools()")
-
-    # ── 2. Reward distribution ────────────────────────────────────────────
+    # 2.
     from src.rl.reward_functions import GRPOToolReward
     rf = GRPOToolReward(config)
 
@@ -70,6 +66,7 @@ def main():
                 rewards_random.append(r)
 
     def stats(lst, label):
+        """????????? ????? ?????? ???????."""
         if not lst:
             print(f"  {label}: no data")
             return
@@ -83,8 +80,7 @@ def main():
           (sum(rewards_random)/len(rewards_random) if rewards_random else 0)
     print(f"  gap (relevant - random): {gap:.3f}")
     print(f"  → Gap should be > 1.0 for a strong RL signal")
-
-    # ── 3. Semantic score of relevant vs random tools ────────────────────
+    # 3.
     from src.environment.tool_registry import ToolRegistry
     registry = ToolRegistry(config)
 

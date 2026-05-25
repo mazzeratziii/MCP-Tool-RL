@@ -1,16 +1,16 @@
-# src/rl/train_grpo.py  v6 — multi-GPU profile
+# GRPO-обучение, версия 6, профиль для нескольких GPU
 """
-Profiles
+Профили
 --------
-  desktop   RTX 3070 8 GB  — full quality, fast
-  laptop    4 GB VRAM       — memory-safe, slower
+  desktop   RTX 3070 8 GB  — полное качество, быстро
+  laptop    4 GB VRAM       — безопасно для памяти, медленнее
 
-Usage:
+Использование:
   python main.py --mode train --epochs 30 --profile desktop
   python main.py --mode train --epochs 30 --profile laptop
 
-Profile is passed via config.profile (set in main.py from --profile arg).
-Falls back to 'laptop' if not set.
+Профиль передаётся через config.profile и задаётся в main.py аргументом --profile.
+Если профиль не задан, используется 'laptop'.
 """
 
 import os
@@ -28,10 +28,11 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from src.environment.mcp_environment import MCPEnvironment
 from src.environment.network_emulator import NetworkMode
 from src.rl.reward_functions import GRPOToolReward
+from src.rl.training_plot import TrainingMetric, TrainingProgressLogger
 from src.prompts import get_dynamic_prompt
 
 
-# ── Hardware profiles ──────────────────────────────────────────────────────────
+# Профили оборудования
 
 @dataclass
 class HWProfile:
@@ -50,7 +51,7 @@ class HWProfile:
     grad_clip: float
     use_double_quant: bool
     compute_dtype: torch.dtype
-    sample_temperature: float = 1.0  # exploration temperature during collection
+    sample_temperature: float = 1.0  # температура exploration во время сбора rollout
 
 PROFILES: Dict[str, HWProfile] = {
     "desktop": HWProfile(
@@ -59,15 +60,15 @@ PROFILES: Dict[str, HWProfile] = {
         lora_alpha      = 32,
         lora_targets    = ["q_proj", "v_proj", "k_proj", "o_proj"],
         grpo_group_size = 6,
-        train_set_size  = 1500,  # was 800
-        resample_every  = 3,     # was 5
+        train_set_size  = 1500,  # было 800
+        resample_every  = 3,     # было 5
         top_k_tools     = 20,
         max_ctx_len     = 512,
-        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
-        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
+        entropy_coeff   = 0.02,   # было 0.005 — более сильная регуляризация
+        semantic_bias   = 5.0,    # было 3.0 — увеличено для лучшей релевантности
         warmup_steps    = 100,
         grad_clip       = 0.5,
-        use_double_quant= False,   # not needed on 8 GB
+        use_double_quant= False,   # не требуется на 8 GB
         compute_dtype   = torch.bfloat16,
     ),
     "laptop": HWProfile(
@@ -75,13 +76,13 @@ PROFILES: Dict[str, HWProfile] = {
         lora_r          = 4,
         lora_alpha      = 8,
         lora_targets    = ["q_proj", "v_proj"],
-        grpo_group_size = 3,     # 4→3: 25% fewer forwards
-        train_set_size  = 600,   # 1000→600: faster epoch, diversity via resample
-        resample_every  = 2,     # resample more often to compensate
-        top_k_tools     = 15,    # 20→15: fewer tool embeds (~25% faster)
-        max_ctx_len     = 256,   # 320→256: shorter context saves attention time
-        entropy_coeff   = 0.02,   # was 0.005 — stronger regularisation
-        semantic_bias   = 5.0,    # was 3.0 — increased for better relevance
+        grpo_group_size = 3,     # 4→3: на 25% меньше forward-проходов
+        train_set_size  = 600,   # 1000→600: эпоха быстрее, разнообразие через resample
+        resample_every  = 2,     # чаще пересэмплируем для компенсации
+        top_k_tools     = 15,    # 20→15: меньше embeddings инструментов, примерно на 25% быстрее
+        max_ctx_len     = 256,   # 320→256: более короткий контекст экономит время attention
+        entropy_coeff   = 0.02,   # было 0.005 — более сильная регуляризация
+        semantic_bias   = 5.0,    # было 3.0 — увеличено для лучшей релевантности
         warmup_steps    = 80,
         grad_clip       = 0.5,
         use_double_quant= True,
@@ -93,11 +94,12 @@ PROFILES: Dict[str, HWProfile] = {
 
 class NetMCPTrainer:
     def __init__(self, config):
+        """?????????????? ?????? ? ????????? ??????????? ???????????."""
         self.config = config
         self.reward_fn = GRPOToolReward(config)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ── Select profile ────────────────────────────────────────────
+        # Выбор профиля
         profile_name = getattr(config, "profile", "laptop")
         if profile_name not in PROFILES:
             print(f"Unknown profile '{profile_name}', falling back to 'laptop'")
@@ -109,7 +111,7 @@ class NetMCPTrainer:
             total_mb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 2
             print(f"VRAM: {total_mb} MB")
 
-        # ── Model ─────────────────────────────────────────────────────
+        # Модель
         quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=self.p.compute_dtype,
@@ -157,8 +159,13 @@ class NetMCPTrainer:
             config, llm_client=None, network_mode=NetworkMode.DETERMINISTIC
         )
         self.llm_client = None
+        self.progress_logger = TrainingProgressLogger(
+            csv_path=getattr(config, "training_log_path", "runs/training_metrics.csv"),
+            plot_path=getattr(config, "training_plot_path", "runs/training_curve.png"),
+            enabled=getattr(config, "training_plot_enabled", True),
+        )
 
-        # ── Fixed training pool ───────────────────────────────────────
+        # Фиксированный пул обучения
         pool = [p for p in config.train_prompts if p.get("relevant_tools")]
         if not pool:
             pool = config.train_prompts
@@ -170,7 +177,7 @@ class NetMCPTrainer:
               f"top_k={self.p.top_k_tools}  "
               f"group_size={self.p.grpo_group_size}")
 
-        # Pre-cache all tool name embeddings (done once, saves ~80% of per-step tokenisation)
+        # Предварительно кешируем embeddings названий инструментов
         print("Pre-caching tool embeddings...")
         self._tool_emb_cache: Dict[str, torch.Tensor] = {}
         embed_layer = self.model.get_input_embeddings()
@@ -184,20 +191,23 @@ class NetMCPTrainer:
         print(f"Cached {len(self._tool_emb_cache)} tool embeddings")
 
     # ------------------------------------------------------------------
-    # Utilities
+    # Вспомогательные методы
     # ------------------------------------------------------------------
 
     def _clear(self):
+        """??????? CUDA-??? ? ????????? ?????? ??????."""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
 
     def _current_lr(self) -> float:
+        """?????????? ??????? learning rate ? warmup."""
         return self.config.rl.learning_rate * min(
             1.0, (self._update_step + 1) / self.p.warmup_steps
         )
 
     def _parse_tool_call(self, text: str) -> Optional[str]:
+        """????????? ??? ??????????? ?? ?????? LLM."""
         if not text:
             return None
         m = re.search(r"<tool_call>(.*?)</tool_call>", text, re.IGNORECASE | re.DOTALL)
@@ -210,12 +220,93 @@ class NetMCPTrainer:
                 return token
         return None
 
+    def rewrite_query_for_retrieval(self, query: str) -> Optional[str]:
+        """
+        Просит загруженную base/LoRA-модель построить короткие английские ключевые слова для retrieval.
+
+        Retrieval выполняется до ранжирования политикой. Если многоязычный или шумный
+        пользовательский текст не находит подходящих кандидатов, обученная политика
+        сможет лишь переупорядочить плохие варианты. Этот метод даёт retriever-у
+        английское API-представление запроса, сохраняя исходный запрос для
+        финального prompt ранжирования.
+        """
+        if not query or not hasattr(self, "model") or not hasattr(self, "tokenizer"):
+            return None
+
+        prompt = (
+            "Task: convert the request into 3-8 English search keywords for API/tool retrieval.\n"
+            "Output only the keywords.\n"
+            "Bad output: explanations, labels, field names, instructions.\n"
+            "Request: weather in London\n"
+            "weather current London\n"
+            "Request: top 20 NFT collections\n"
+            "top NFT collections ranking sales\n"
+            f"Request: {query}\n"
+        )
+
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            ids = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=192,
+                padding=False,
+            ).input_ids.to(self.device)
+            with torch.inference_mode():
+                out = self.model.generate(
+                    ids,
+                    max_new_tokens=32,
+                    do_sample=False,
+                    temperature=None,
+                    top_p=None,
+                    top_k=None,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            text = self.tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
+            text = self._clean_retrieval_rewrite(text)
+            return text or None
+        except Exception as exc:
+            print(f"Query rewrite skipped: {exc}")
+            return None
+        finally:
+            if was_training:
+                self.model.train()
+
+    def _clean_retrieval_rewrite(self, text: str) -> str:
+        """??????? ????????? LLM rewrite ?? ??????."""
+        text = (text or "").strip()
+        text = text.splitlines()[0] if text else ""
+        text = re.sub(r"^(keywords?|answer|query)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"[<>`\"']", " ", text)
+        text = " ".join(text.split())
+        bad_fragments = {
+            "entities",
+            "brands",
+            "locations",
+            "intent",
+            "return keywords",
+            "output only",
+            "request",
+            "explanation",
+            "field names",
+            "instructions",
+        }
+        lowered = text.lower()
+        if any(fragment in lowered for fragment in bad_fragments):
+            return ""
+        if len(text) < 3 or len(text) > 180:
+            return ""
+        return text
+
     # ------------------------------------------------------------------
-    # Tool state helpers
+    # Работа с состоянием инструментов
     # ------------------------------------------------------------------
 
     def _get_tools_state(self, prompt: Dict):
-        """Returns (state, tools_list, semantic_scores)."""
+        """Возвращает (state, tools_list, semantic_scores)."""
         state = self.env.reset(prompt)
         candidates = self.env.tools.get_top_k_tools(
             self.env.current_query, k=self.p.top_k_tools
@@ -248,16 +339,37 @@ class NetMCPTrainer:
                 "is_relevant": is_rel,
                 "used": False,
             })
+        if not tools_state:
+            for tool in candidates[: max(3, min(self.p.top_k_tools, len(candidates)))]:
+                sv = self.env.network.get_server_state(tool["name"])
+                qos = self.env.network.get_qos_metrics(tool["name"])
+                sem = self.env.tools.semantic_similarity(
+                    self.env.current_query, tool["name"]
+                )
+                is_rel = any(rt["name"] == tool["name"] for rt in self.env.relevant_tools)
+                tools_state.append({
+                    "name": tool["name"],
+                    "category": tool.get("category", "general"),
+                    "description": tool.get("description", "")[:50] + "...",
+                    "available": sv["available"],
+                    "latency": qos["avg_latency"],
+                    "stability": qos["stability"],
+                    "semantic_score": sem,
+                    "is_relevant": is_rel,
+                    "used": False,
+                })
+
         state["tools"] = tools_state
         tools = [t["name"] for t in tools_state]
         scores = [t["semantic_score"] for t in tools_state]
         return state, tools, scores
 
     # ------------------------------------------------------------------
-    # Encode context and build tool embeddings — ONCE per group
+    # Кодирование контекста и embeddings инструментов один раз на группу
     # ------------------------------------------------------------------
 
     def _encode_context(self, state: Dict) -> torch.Tensor:
+        """???????? prompt-???????? ? token ids."""
         ctx = get_dynamic_prompt(state["query"], state["tools"])
         ids = self.tokenizer(
             ctx, return_tensors="pt",
@@ -267,7 +379,10 @@ class NetMCPTrainer:
 
     @torch.inference_mode()
     def _build_tool_embs(self, tools: List[str]) -> torch.Tensor:
-        """Return (n, d) matrix using pre-cached embeddings — no tokenisation per call."""
+        """Возвращает матрицу (n, d) из кешированных embeddings без токенизации на каждый вызов."""
+        if not tools:
+            raise ValueError("Нельзя построить embeddings для пустого списка инструментов")
+
         embs = []
         embed_layer = self.model.get_input_embeddings()
         for t in tools:
@@ -281,13 +396,14 @@ class NetMCPTrainer:
         return torch.stack(embs, dim=0)   # (n, d)
 
     # ------------------------------------------------------------------
-    # Forward
+    # Прямой проход
     # ------------------------------------------------------------------
 
     def _forward_with_embs(self, input_ids: torch.Tensor,
                            tool_embs: torch.Tensor,
                            semantic_scores: Optional[List[float]] = None
                            ) -> torch.Tensor:
+        """??????? logits ?????? ?? ????????? ? ????????????."""
         out = self.model(input_ids, output_hidden_states=True)
         hidden = out.hidden_states[-1][:, -1, :]          # (1, d)
         logits = torch.matmul(hidden, tool_embs.T).squeeze(0)
@@ -300,13 +416,24 @@ class NetMCPTrainer:
         return logits
 
     # ------------------------------------------------------------------
-    # Build one GRPO group
+    # Создание одной GRPO-группы
     # ------------------------------------------------------------------
 
     def _make_group(self, prompt: Dict) -> Dict:
+        """???????? ?????? rollout-?? ??? GRPO."""
         state, tools, scores = self._get_tools_state(prompt)
+        if not tools:
+            return {
+                "input_ids": None,
+                "tool_embs": None,
+                "semantic_scores": [],
+                "rollouts": [],
+                "adv_std": 0.0,
+                "empty": True,
+            }
+
         input_ids = self._encode_context(state)
-        tool_embs = self._build_tool_embs(tools)   # inference_mode
+        tool_embs = self._build_tool_embs(tools)   # режим inference_mode
 
         rollouts = []
         with torch.inference_mode():
@@ -315,7 +442,7 @@ class NetMCPTrainer:
                 probs = F.softmax(logits, dim=-1)
                 probs = torch.nan_to_num(probs, nan=1e-8)
                 probs = probs / (probs.sum() + 1e-8)
-                # Apply temperature — higher = more exploration, fewer skipped groups
+                # Применяем температуру: выше значение — больше exploration и меньше пропущенных групп
                 if self.p.sample_temperature != 1.0:
                     logits_t = (logits / self.p.sample_temperature)
                     probs = torch.softmax(logits_t, dim=-1)
@@ -353,7 +480,7 @@ class NetMCPTrainer:
                     "is_relevant": info.get("is_relevant", False),
                 })
 
-        # GRPO advantage
+        # Преимущество для GRPO
         rews = [r["reward"] for r in rollouts]
         mean_r = sum(rews) / len(rews)
         std_r = (sum((x - mean_r) ** 2 for x in rews) / len(rews)) ** 0.5
@@ -370,15 +497,19 @@ class NetMCPTrainer:
         }
 
     # ------------------------------------------------------------------
-    # Gradient update for one group
+    # Обновление градиента для одной группы
     # ------------------------------------------------------------------
 
     def _train_group(self, group: Dict) -> Optional[float]:
+        """?????? ???? gradient update ?? ?????? rollout-??."""
+        if group.get("empty"):
+            return None
+
         if group["adv_std"] < 1e-8:
             return None
 
         input_ids  = group["input_ids"]
-        # clone: inference_mode tensors can't participate in backward
+        # Клонируем: тензоры из inference_mode не участвуют в backward
         tool_embs  = group["tool_embs"].clone()
         scores     = group["semantic_scores"]
         rollouts   = group["rollouts"]
@@ -419,10 +550,11 @@ class NetMCPTrainer:
         return total_loss
 
     # ------------------------------------------------------------------
-    # train()
+    # Обучение
     # ------------------------------------------------------------------
 
     def train(self):
+        """????????? ?????? ???? GRPO-????????."""
         print(f"\n{'=' * 60}")
         print(f"GRPO TRAINING [{self.p.name}] — {self.config.rl.num_epochs} epochs")
         print(f"{'=' * 60}")
@@ -435,7 +567,7 @@ class NetMCPTrainer:
                 self.env.network.rotate_scenario()
                 print(f"\n--- Epoch {epoch} [scenario: {self.env.network.current_scenario}] ---")
 
-            # Resample train set for diversity
+            # Пересэмплируем train set для разнообразия
             if epoch % self.p.resample_every == 1:
                 self.train_set = random.sample(
                     self._train_pool,
@@ -473,15 +605,35 @@ class NetMCPTrainer:
                     self._clear()
 
             rel = relevant_n / max(total_n, 1)
+            avg_loss = sum(losses) / max(len(losses), 1)
+            avg_reward = total_reward / max(total_n, 1)
+            success_rate = success_n / max(total_n, 1)
+            avg_adv_std = sum(adv_stds) / max(len(adv_stds), 1)
+            current_lr = self._current_lr()
             print(
-                f"  loss={sum(losses)/max(len(losses),1):.4f}  "
-                f"reward={total_reward/max(total_n,1):.3f}  "
-                f"success={success_n/max(total_n,1):.2%}  "
+                f"  loss={avg_loss:.4f}  "
+                f"reward={avg_reward:.3f}  "
+                f"success={success_rate:.2%}  "
                 f"relevance={rel:.2%}  "
                 f"rollouts={total_n}  skipped={skipped}  "
                 f"updates={len(losses)}  "
-                f"adv_std={sum(adv_stds)/max(len(adv_stds),1):.3f}  "
-                f"lr={self._current_lr():.2e}"
+                f"adv_std={avg_adv_std:.3f}  "
+                f"lr={current_lr:.2e}"
+            )
+            self.progress_logger.append(
+                TrainingMetric(
+                    epoch=epoch,
+                    loss=avg_loss,
+                    reward=avg_reward,
+                    success_rate=success_rate,
+                    relevance_rate=rel,
+                    updates=len(losses),
+                    skipped=skipped,
+                    rollouts=total_n,
+                    adv_std=avg_adv_std,
+                    lr=current_lr,
+                    scenario=str(getattr(self.env.network, "current_scenario", "")),
+                )
             )
 
             if rel > best_relevance:
@@ -495,13 +647,17 @@ class NetMCPTrainer:
             self._clear()
 
         print("\nTraining complete.")
+        if getattr(self.progress_logger, "enabled", False):
+            print(f"Training metrics: {self.progress_logger.csv_path}")
+            print(f"Training plot:    {self.progress_logger.plot_path}")
 
     # ------------------------------------------------------------------
-    # evaluate()
+    # Оценка
     # ------------------------------------------------------------------
 
     def evaluate(self, num_episodes: int = 200,
                  network_mode: NetworkMode = NetworkMode.CONTROLLED):
+        """????????? ????????? LLM-???????? ?? validation prompts."""
         print(f"\n{'=' * 60}")
         print(f"EVALUATION [{self.p.name}] — {num_episodes} ep, mode={network_mode.value}")
         print(f"{'=' * 60}")
@@ -512,7 +668,7 @@ class NetMCPTrainer:
                                  min(num_episodes, len(pool or self.config.val_prompts)))
 
         success_t = relevant_t = total_t = 0
-        top3_relevant_t = 0   # relevant tool appears in model's top-3
+        top3_relevant_t = 0   # релевантный инструмент есть в top-3 модели
 
         # НОВОЕ: Метрики для оценки адаптации к сети
         total_latency = 0.0
@@ -527,7 +683,7 @@ class NetMCPTrainer:
                 embs   = self._build_tool_embs(tools)
                 logits = self._forward_with_embs(ids, embs, scores)
 
-                # Top-1 greedy
+                # Жадный Top-1
                 top1_idx  = logits.argmax().item()
                 tool      = tools[top1_idx]
                 self.env.reset(prompt)
@@ -548,7 +704,7 @@ class NetMCPTrainer:
                 if selected_tool.get('available', True):
                     available_tool_choices += 1
 
-                # Top-3 accuracy: check if any of top-3 is relevant
+                # Точность Top-3: проверяем, есть ли релевантный инструмент в top-3
                 top3_indices = logits.topk(min(3, len(tools))).indices.tolist()
                 relevant_names = {t["name"] for t in state["tools"]
                                   if t.get("is_relevant", False)}
@@ -569,15 +725,16 @@ class NetMCPTrainer:
         print(f"  Available choices:  {available_tool_choices/n:.2%}  (chose available tools)")
 
     # ------------------------------------------------------------------
-    # Checkpoint save / load
+    # Сохранение и загрузка checkpoint
     # ------------------------------------------------------------------
 
     def _save_checkpoint(self, label):
+        """????????? LoRA checkpoint ? ?????????? ????????."""
         d = f"checkpoints/{label}"
         os.makedirs(d, exist_ok=True)
         self.model.save_pretrained(d)
         self.tokenizer.save_pretrained(d)
-        # Save profile so checkpoint can be resumed correctly
+        # Сохраняем профиль, чтобы checkpoint можно было корректно продолжить
         import json
         meta = {
             "profile": [k for k, v in PROFILES.items() if v is self.p][0],
@@ -591,10 +748,10 @@ class NetMCPTrainer:
 
     def load_checkpoint(self, checkpoint_path: str):
         """
-        Load LoRA adapter weights into the already-initialised model.
-        Uses set_adapter / load_adapter instead of PeftModel.from_pretrained
-        to avoid the 'multiple adapters' warning and missing-key errors when
-        the checkpoint profile differs from the current one.
+        Загружает веса LoRA-адаптера в уже инициализированную модель.
+        Использует set_adapter / load_adapter вместо PeftModel.from_pretrained,
+        чтобы избежать предупреждения multiple adapters и ошибок missing keys, когда
+        профиль checkpoint отличается от текущего.
         """
         import os
         from safetensors.torch import load_file as st_load
@@ -602,7 +759,7 @@ class NetMCPTrainer:
 
         print(f"Loading checkpoint from {checkpoint_path}...")
 
-        # Try loading via PEFT's own adapter loader (no double-wrapping)
+        # Пробуем загрузить через loader адаптеров PEFT без двойной обёртки
         try:
             self.model.load_adapter(checkpoint_path, adapter_name="default")
             print("Checkpoint loaded via load_adapter.")
@@ -610,7 +767,7 @@ class NetMCPTrainer:
         except Exception as e:
             print(f"  load_adapter failed ({e}), trying manual weight load...")
 
-        # Fallback: load safetensors / pytorch_model.bin directly
+        # Резервный путь: напрямую загружаем safetensors или pytorch_model.bin
         st_path  = os.path.join(checkpoint_path, "adapter_model.safetensors")
         bin_path = os.path.join(checkpoint_path, "adapter_model.bin")
 
@@ -628,8 +785,9 @@ class NetMCPTrainer:
               f"({len(missing)} missing, {len(unexpected)} unexpected)")
         print("Checkpoint loaded.")
 
-    # Compatibility shim for interactive mode
+    # Совместимость для интерактивного режима
     def _forward(self, context: str, tools: List[str], **kwargs) -> torch.Tensor:
+        """??????????? wrapper ??? ??????? interactive-??????????."""
         ids  = self.tokenizer(
             context, return_tensors="pt",
             truncation=True, max_length=self.p.max_ctx_len, padding=False,
