@@ -42,7 +42,7 @@ class SelectionBenchmark:
         provider_group_weight: float = 0.0,
         seed: int = 42,
     ) -> None:
-        """?????????????? ?????? ? ????????? ??????????? ???????????."""
+        """Initialize the object."""
         self.config = config
         self.network_mode = network_mode
         self.top_k = top_k
@@ -58,7 +58,7 @@ class SelectionBenchmark:
         episodes: int,
         log_path: Optional[str] = None,
     ) -> BenchmarkSummary:
-        """????????? ??????? ? ?????????? ?????? ??????????."""
+        """Run run."""
         random.seed(self.seed)
         env = MCPEnvironment(self.config, network_mode=self.network_mode)
         selector = AdaptiveToolSelector(
@@ -121,7 +121,7 @@ class SelectionBenchmark:
         prompt: Mapping[str, object],
         policy: str,
     ) -> Dict[str, object]:
-        """????????? ???? benchmark-?????? ? ????????? ?????? ????."""
+        """Run run episode."""
         state = env.reset(dict(prompt))
         state["tools"] = state.get("tools", [])[:self.top_k]
         candidates = candidates_from_environment_state(state)
@@ -198,7 +198,7 @@ class SelectionBenchmark:
         }
 
     def _sample_prompts(self, episodes: int) -> List[Mapping[str, object]]:
-        """???????? prompt-? ??? benchmark ?? validation/train ????."""
+        """Handle sample prompts."""
         pool = [p for p in self.config.val_prompts if p.get("relevant_tools")]
         if not pool:
             pool = [p for p in self.config.train_prompts if p.get("relevant_tools")]
@@ -207,7 +207,7 @@ class SelectionBenchmark:
         return random.sample(pool, min(episodes, len(pool)))
 
     def _empty_row(self, prompt: Mapping[str, object], policy: str) -> Dict[str, object]:
-        """??????? ?????? ?????? ????, ???? ?????????? ?? ??????."""
+        """Handle empty row."""
         return {
             "policy": policy,
             "query_id": prompt.get("query_id"),
@@ -238,7 +238,7 @@ class SelectionBenchmark:
 
 
 def print_summary(summary: BenchmarkSummary) -> None:
-    """???????? ??????? ?????? benchmark-??????."""
+    """Print print summary."""
     print("\n" + "=" * 60)
     print(f"Benchmark: {summary.policy}")
     print("=" * 60)
@@ -254,5 +254,5 @@ def print_summary(summary: BenchmarkSummary) -> None:
 
 
 def summary_to_dict(summary: BenchmarkSummary) -> Dict[str, object]:
-    """??????????? dataclass summary ? ???????."""
+    """Handle summary to dict."""
     return asdict(summary)

@@ -38,7 +38,7 @@ class FunctionalToolMatcher:
     """
 
     def infer_query_intent(self, query: str) -> ToolIntent:
-        """?????????? intent ????????????????? ???????."""
+        """Infer infer query intent."""
         q = query.lower()
 
         if self._looks_like_calculation(q):
@@ -60,7 +60,7 @@ class FunctionalToolMatcher:
         return ToolIntent.DATA_LOOKUP
 
     def infer_tool_intent(self, name: str, metadata: Mapping[str, object]) -> ToolIntent:
-        """?????????? intent ??????????? ?? ????? ? ??????????."""
+        """Infer infer tool intent."""
         text = self.candidate_text(name, metadata)
 
         if "notoolneeded" in text or "no external tool" in text:
@@ -86,7 +86,7 @@ class FunctionalToolMatcher:
         return ToolIntent.DATA_LOOKUP
 
     def match(self, query: str, name: str, metadata: Mapping[str, object]) -> IntentMatch:
-        """?????????? intent ??????? ? ??????????? ? ?????????? ????????."""
+        """Match match."""
         query_intent = self.infer_query_intent(query)
         tool_intent = self.infer_tool_intent(name, metadata)
         reasons: Set[str] = set()
@@ -128,7 +128,7 @@ class FunctionalToolMatcher:
         )
 
     def candidate_text(self, name: str, metadata: Mapping[str, object]) -> str:
-        """???????? ????? ??????????? ?? ????? ? ??????????."""
+        """Handle candidate text."""
         parts = [name]
         for value in metadata.values():
             if isinstance(value, str):
@@ -138,7 +138,7 @@ class FunctionalToolMatcher:
         return " ".join(parts).lower()
 
     def _compatible_weather_intents(self, query_intent: ToolIntent, tool_intent: ToolIntent) -> bool:
-        """????????? ????????????? weather-intent-??."""
+        """Handle compatible weather intents."""
         weather_intents = {
             ToolIntent.CURRENT_WEATHER,
             ToolIntent.WEATHER_FORECAST,
@@ -148,12 +148,12 @@ class FunctionalToolMatcher:
         return query_intent in weather_intents and tool_intent in weather_intents
 
     def _compatible_lookup_intents(self, query_intent: ToolIntent, tool_intent: ToolIntent) -> bool:
-        """????????? ????????????? lookup/search intent-??."""
+        """Handle compatible lookup intents."""
         lookup_intents = {ToolIntent.SEARCH, ToolIntent.DATA_LOOKUP}
         return query_intent in lookup_intents and tool_intent in lookup_intents
 
     def _is_weather_query(self, query: str) -> bool:
-        """?????????, ????????? ?? ?????? ? ??????."""
+        """Handle is weather query."""
         return any(term in query for term in (
             "weather",
             "temperature",
@@ -169,7 +169,7 @@ class FunctionalToolMatcher:
         ))
 
     def _looks_like_calculation(self, query: str) -> bool:
-        """?????????, ????? ?? ?????? ?? ??????????."""
+        """Handle looks like calculation."""
         return bool(re.search(r"\d+\s*[\+\-\*/]\s*\d+", query)) or any(
             term in query for term in ("calculate", "calculator", "sum of", "multiply", "divide", "рассчитай", "посчитай")
         )

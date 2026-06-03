@@ -1,18 +1,19 @@
-# Retriever Model
+# Retriever model
 
-Эта папка хранит файлы sentence-transformers retriever.
+Эта папка предназначена для локальной sentence-transformers модели, которая используется в `ToolRegistry` для semantic retrieval.
 
-Большие веса вроде `model.safetensors` или `pytorch_model.bin` могут отсутствовать в Git, потому что они игнорируются как крупные артефакты.
+Большие веса модели, например `model.safetensors` или `pytorch_model.bin`, не должны храниться в GitHub. Они игнорируются как крупные артефакты.
 
-Если весов нет, `ToolRegistry` автоматически использует lexical retrieval. Это позволяет запускать лёгкие команды:
+Если веса отсутствуют, проект не падает: `ToolRegistry` автоматически использует lexical fallback. Это менее точно, но позволяет запускать базовые режимы:
 
-```bash
+```powershell
+python main.py --mode healthcheck
 python main.py --mode select --query "What is the weather in London?"
 python main.py --mode benchmark --benchmark-policy adaptive
 ```
 
-Для лучшего semantic retrieval положите полную sentence-transformers модель в эту папку или задайте:
+Чтобы использовать полноценный semantic retriever, положите модель в эту папку или задайте путь в `.env`:
 
-```text
-RETRIEVER_MODEL_PATH=path/to/model
+```env
+RETRIEVER_MODEL_PATH=models/retriever
 ```

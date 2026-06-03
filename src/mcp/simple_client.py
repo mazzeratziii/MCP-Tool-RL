@@ -22,7 +22,7 @@ class SimpleMCPClient:
     """Упрощённый MCP клиент для Python серверов"""
 
     def __init__(self):
-        """?????????????? ?????? ? ????????? ??????????? ???????????."""
+        """Initialize the object."""
         self.servers: Dict[str, subprocess.Popen] = {}
         self.metrics_history: Dict[str, List[MCPToolMetrics]] = {}
         self.tool_to_server: Dict[str, str] = {}
@@ -35,6 +35,9 @@ class SimpleMCPClient:
             server_name: имя сервера (например, "calculator")
             server_command: команда запуска (например, ["python", "-m", "mcp_servers.calculator"])
         """
+        if server_name in self.servers:
+            return True
+
         try:
             # Запускаем сервер как subprocess
             process = subprocess.Popen(
@@ -47,7 +50,7 @@ class SimpleMCPClient:
             )
 
             self.servers[server_name] = process
-            print(f"✓ MCP server '{server_name}' started")
+            print(f"[OK] MCP server '{server_name}' started")
 
             # Получаем список инструментов
             tools = self._list_tools(server_name)
@@ -57,7 +60,7 @@ class SimpleMCPClient:
 
             return True
         except Exception as e:
-            print(f"✗ Failed to start MCP server '{server_name}': {e}")
+            print(f"[ERR] Failed to start MCP server '{server_name}': {e}")
             return False
 
     def _list_tools(self, server_name: str) -> List[str]:
@@ -238,7 +241,7 @@ class SimpleMCPClient:
             try:
                 process.terminate()
                 process.wait(timeout=5)
-                print(f"✓ MCP server '{server_name}' stopped")
+                print(f"[OK] MCP server '{server_name}' stopped")
             except Exception as e:
                 print(f"Warning: Could not stop server '{server_name}': {e}")
                 try:

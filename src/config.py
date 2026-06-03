@@ -6,7 +6,7 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     def load_dotenv(*args, **kwargs):
-        """???????? ??? optional python-dotenv, ???? ????? ?? ??????????."""
+        """Load load dotenv."""
         return False
 
 load_dotenv()
@@ -59,7 +59,7 @@ class RewardConfig:
 
 class Config:
     def __init__(self):
-        """?????????????? ?????? ? ????????? ??????????? ???????????."""
+        """Initialize the object."""
         print("\n" + "=" * 60)
         print("INITIALIZING CONFIGURATION")
         print("=" * 60)
@@ -95,12 +95,12 @@ class Config:
         # При необходимости можно вывести флаг использования локальной модели
 
     def _validate(self):
-        """????????? ??????????? ???????????? ????????????."""
+        """Validate validate."""
         if not self.model_name:
             print("Warning: MODEL_NAME not set, using default")
 
     def load_data(self):
-        """????????? ToolBench, ??????????? ? train/validation prompts."""
+        """Load load data."""
         from src.data.toolbench_loader import ToolBenchLoader
         from src.tools.tool_selector import ToolSelector
 
@@ -167,6 +167,89 @@ class Config:
                 "method": "GET",
                 "required_parameters": [],
                 "optional_parameters": []
+            },
+            {
+                "name": "text.count",
+                "category": "utility",
+                "description": "Count characters, words and lines in a text. Use for word count, text length, line count and simple text statistics.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "Input text"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "text.extract_keywords",
+                "category": "utility",
+                "description": "Extract frequent keywords from text. Use for keyword extraction, text analysis and summarizing important terms.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "Input text"}],
+                "optional_parameters": [{"name": "limit", "type": "integer", "description": "Maximum number of keywords"}]
+            },
+            {
+                "name": "text.slugify",
+                "category": "utility",
+                "description": "Create URL-friendly slug from text. Use for converting titles into lowercase hyphen-separated identifiers.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "Input text"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "regex.search",
+                "category": "utility",
+                "description": "Search text with a regular expression and return matches. Use for pattern matching in text.",
+                "method": "POST",
+                "required_parameters": [
+                    {"name": "text", "type": "string", "description": "Input text"},
+                    {"name": "pattern", "type": "string", "description": "Regular expression"}
+                ],
+                "optional_parameters": []
+            },
+            {
+                "name": "datetime.now",
+                "category": "datetime",
+                "description": "Return current date and time. Use for current timestamp, current UTC time and date requests.",
+                "method": "GET",
+                "required_parameters": [],
+                "optional_parameters": [{"name": "timezone", "type": "string", "description": "Timezone label"}]
+            },
+            {
+                "name": "json.validate",
+                "category": "utility",
+                "description": "Validate JSON text and report whether it is valid. Use for checking JSON syntax.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "JSON text"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "json.format",
+                "category": "utility",
+                "description": "Pretty-print JSON text with indentation. Use for formatting or beautifying JSON.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "JSON text"}],
+                "optional_parameters": [{"name": "indent", "type": "integer", "description": "Indent size"}]
+            },
+            {
+                "name": "hash.sha256",
+                "category": "utility",
+                "description": "Calculate SHA-256 hash for a text string. Use for hashing, checksums and fingerprints.",
+                "method": "POST",
+                "required_parameters": [{"name": "text", "type": "string", "description": "Input text"}],
+                "optional_parameters": []
+            },
+            {
+                "name": "random.uuid",
+                "category": "utility",
+                "description": "Generate a random UUID4 identifier. Use when a unique id is needed.",
+                "method": "GET",
+                "required_parameters": [],
+                "optional_parameters": []
+            },
+            {
+                "name": "random.password",
+                "category": "utility",
+                "description": "Generate a random password. Use when a random secure-looking password string is needed.",
+                "method": "GET",
+                "required_parameters": [],
+                "optional_parameters": [{"name": "length", "type": "integer", "description": "Password length"}]
             }
         ]
 
@@ -207,5 +290,5 @@ class Config:
         print(f"   Val prompts: {len(self.val_prompts)}")
 
     def get_tools_by_category(self, category: str) -> List[Dict]:
-        """?????????? ??????????? ????????? ?????????."""
+        """Return get tools by category."""
         return [t for t in self.tools if t.get('category', '').lower() == category.lower()]

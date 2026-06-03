@@ -17,7 +17,7 @@ class HybridMCPEnvironment(MCPEnvironment):
     """
 
     def __init__(self, config: Config, mcp_config_path: str = "mcp_config.json"):
-        """?????????????? ?????? ? ????????? ??????????? ???????????."""
+        """Initialize the object."""
         super().__init__(config)
 
         # Инициализируем MCP клиент
@@ -63,7 +63,7 @@ class HybridMCPEnvironment(MCPEnvironment):
                         self.mcp_tools.add(tool_name)
                         enabled_count += 1
 
-            print(f"\n✓ Initialized {enabled_count} MCP tools")
+            print(f"\n[OK] Initialized {enabled_count} MCP tools")
             print(f"  MCP tools: {list(self.mcp_tools)[:5]}...")
             print(f"  Emulated tools: {len(self.config.tools) - enabled_count}")
             print("=" * 60 + "\n")
@@ -107,13 +107,13 @@ class HybridMCPEnvironment(MCPEnvironment):
 
         # ГИБРИДНЫЙ ВЫЗОВ
         if self._is_mcp_tool(action):
-            # ✅ РЕАЛЬНЫЙ вызов через MCP
+            # Реальный вызов через MCP
             result = self._call_mcp_tool(action, tool)
             latency = result['latency']
             success = result['success']
             response = result.get('result', {})
         else:
-            # ❌ ЭМУЛЯЦИЯ
+            # Эмуляция ToolBench-вызова
             latency = self.network.get_current_latency(
                 tool['name'],
                 {'base_latency': tool.get('base_latency', 0.1)}
@@ -165,6 +165,16 @@ class HybridMCPEnvironment(MCPEnvironment):
             elif "http" in tool_name:
                 # Для HTTP нужен URL
                 arguments = {"url": self.current_query}
+            elif tool_name == "datetime.now":
+                arguments = {}
+            elif tool_name == "random.uuid":
+                arguments = {}
+            elif tool_name == "random.password":
+                arguments = {"length": 16}
+            elif tool_name == "regex.search":
+                arguments = {"text": self.current_query, "pattern": r"\w+"}
+            elif tool_name.startswith(("text.", "json.", "hash.")):
+                arguments = {"text": self.current_query}
 
             # Вызываем через MCP
             result = self.mcp_client.call_tool(tool_name, arguments)

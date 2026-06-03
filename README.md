@@ -1,191 +1,290 @@
 # MCP-Tool-RL
 
-## Финальное состояние
+Исследовательский прототип для выбора MCP-инструмента в условиях нестабильной сети.
 
-Проект оформлен как исследовательский прототип RL-расширения NetMCP/SONAR.
+Проект решает задачу: по пользовательскому запросу выбрать не просто самый похожий по описанию инструмент, а инструмент, который подходит по смыслу и способен стабильно выполниться при текущих сетевых условиях.
 
-Финальный отчёт: [FINAL_REPORT.md](FINAL_REPORT.md)
+## Коротко
 
-Финальная проверка:
+MCP-агент получает текстовый запрос и выбирает внешний инструмент. В классическом варианте выбор часто строится только на semantic similarity между запросом и описанием API. В этом проекте к смысловому соответствию добавлены нефункциональные признаки выполнения:
+
+- задержка ответа;
+- доступность инструмента;
+- вероятность успешного ответа;
+- стабильность;
+- jitter;
+- штрафы за повторы и недоступность.
+
+На этой основе сравниваются четыре подхода:
+
+| Политика | Идея |
+| --- | --- |
+| `semantic` | выбор только по смысловой близости |
+| `sonar` | semantic score + сетевой score |
+| `adaptive` | semantic + intent + QoS + штрафы |
+| `LLM/GRPO` | обучаемая LLM-политика выбора через reward среды |
+
+## Зачем это нужно
+
+В MCP-сценариях инструмент может быть формально подходящим, но плохим практически:
+
+- API сейчас недоступен;
+- задержка слишком высокая;
+- сервис часто возвращает ошибку;
+- похожий инструмент работает стабильнее;
+- запрос требует не просто поиска, а конкретного действия.
+
+Поэтому выбор инструмента становится задачей адаптивного ранжирования: нужно учитывать функциональные требования и условия выполнения.
+
+## Данные
+
+В проекте используются несколько блоков данных.
+
+| Блок | Что содержит | Где используется |
+| --- | --- | --- |
+| ToolBench / MAuRS | пользовательские запросы, релевантные инструменты, описания API, train/validation prompts | обучение, benchmark, evaluate |
+| MCP tools | названия, описания, категории, параметры, примеры вызовов | формирование реестра инструментов |
+| `mcp_config.json` | локальные MCP-инструменты и дополнительные описания | расширение реестра |
+| `.env` | модель, API-параметры, пути к retriever, настройки запуска | конфигурация окружения |
+| `runs/*.jsonl` | логи выбора инструментов | анализ ошибок и сравнение политик |
+| `checkpoints/*` | LoRA-checkpoints обученной политики | evaluate и interactive |
+
+Схема данных генерируется командой:
 
 ```powershell
-.\scripts\run_final_checks.ps1
+python scripts/build_used_data_slide.py
 ```
 
-Финальная проверка с evaluation обученной LLM:
+Результат появится в:
+
+```text
+outputs/data_blocks/used_data_slide.png
+```
+
+## Архитектура
+
+Основные модули проекта:
+
+| Модуль | Назначение |
+| --- | --- |
+| `ToolRegistry` | хранит инструменты, строит semantic/lexical retrieval, возвращает top-k кандидатов |
+| `NetworkEmulator` | моделирует latency, jitter, availability, stability и success rate |
+| `MCPEnvironment` | формирует state, выполняет выбранный tool, считает reward |
+| `AdaptiveSelector` | прозрачная baseline-политика с учётом intent, QoS и штрафов |
+| `SonarSelector` | SONAR-style baseline: semantic score + network score |
+| `NetMCPTrainer` | обучение LLM/LoRA-политики через GRPO |
+
+Упрощённый pipeline:
+
+```text
+запрос пользователя
+        ↓
+нормализация и retrieval
+        ↓
+top-k MCP-инструментов
+        ↓
+состояние среды: semantic + QoS + relevance labels
+        ↓
+политика выбора: semantic / sonar / adaptive / LLM-GRPO
+        ↓
+выполнение tool, reward, метрики и лог
+```
+
+## Установка
+
+Требуется Python 3.10+.
 
 ```powershell
-.\scripts\run_final_checks.ps1 -IncludeLLMEvaluate
-```
-
-## График обучения
-
-Во время `python main.py --mode train` после каждой эпохи сохраняются `runs/training_metrics.csv` и `runs/training_curve.png`.
-
-Прототип выбора MCP-инструментов в условиях нестабильной сети.
-
-Проект объединяет:
-
-- метаданные инструментов и запросы из ToolBench;
-- семантический поиск кандидатов;
-- проверку функционального соответствия запроса и возможностей инструмента;
-- адаптивное ранжирование по задержке, джиттеру, доступности, успешности и ретраям;
-- benchmark и анализ JSONL-логов для сравнения политик выбора;
-- опциональный GRPO/LLM pipeline для обучения политики.
-
-## Основные команды
-
-Установка зависимостей:
-
-```bash
+git clone https://github.com/mazzeratziii/MCP-Tool-RL.git
+cd MCP-Tool-RL
+python -m venv venv
+.\venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Выбор инструмента для одного запроса:
+Создайте `.env` по примеру `.env.example`:
 
-```bash
+```env
+MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
+BASE_URL=
+API_TOKEN=
+NETWORK_MODE=deterministic
+BATCH_SIZE=1
+MAX_STEPS=3
+LEARNING_RATE=1e-5
+RETRIEVER_MODEL_PATH=models/retriever
+```
+
+`.env`, `runs/` и `checkpoints/` игнорируются Git и не должны попадать в GitHub при обычном `git add .`.
+
+## Быстрый старт
+
+Проверить окружение:
+
+```powershell
 python main.py --mode healthcheck
 ```
 
-```bash
-python main.py --mode select --query "What is the weather in London?" --network-mode controlled
+Выбрать инструмент для одного запроса:
+
+```powershell
+python main.py --mode select `
+  --query "What is the weather in London?" `
+  --network-mode controlled `
+  --top-k 10
 ```
 
-Benchmark адаптивного выбора:
+Сравнить baseline-политики:
 
-```bash
-python main.py --mode benchmark --benchmark-policy adaptive --eval-episodes 100 --network-mode controlled --log-path runs/selection_benchmark.jsonl
+```powershell
+python main.py --mode benchmark `
+  --benchmark-policy all `
+  --eval-episodes 200 `
+  --network-mode controlled
 ```
 
-Анализ ошибок benchmark:
+Запустить интерактивный режим:
 
-```bash
-python main.py --mode analyze-log --log-path runs/selection_benchmark.jsonl
+```powershell
+python main.py --mode interactive `
+  --checkpoint checkpoints/best `
+  --profile laptop
 ```
 
-Обучение GRPO-политики:
+Оценить обученную LLM/GRPO-политику:
 
-```bash
-python main.py --mode train --epochs 20 --profile laptop
+```powershell
+python main.py --mode evaluate `
+  --checkpoint checkpoints/best `
+  --eval-episodes 200 `
+  --network-mode controlled `
+  --profile laptop
 ```
 
-Интерактивный режим обученной политики:
+## Режимы CLI
 
-```bash
-python main.py --mode interactive --checkpoint checkpoints/best
-```
+| Режим | Команда | Назначение |
+| --- | --- | --- |
+| healthcheck | `--mode healthcheck` | проверка зависимостей, конфигурации и retriever |
+| select | `--mode select --query "..."` | выбор инструмента для одного запроса |
+| benchmark | `--mode benchmark` | сравнение политик выбора |
+| analyze-log | `--mode analyze-log` | анализ JSONL-логов benchmark |
+| train | `--mode train` | GRPO-обучение LLM/LoRA-политики |
+| evaluate | `--mode evaluate` | оценка checkpoint |
+| interactive | `--mode interactive` | ручная проверка запросов |
 
-## Текущий лучший baseline
+Основные параметры:
 
-Рекомендуемый профиль: `adaptive conservative`.
+| Параметр | Значение |
+| --- | --- |
+| `--network-mode` | `deterministic`, `controlled`, `stochastic` |
+| `--benchmark-policy` | `semantic`, `sonar`, `adaptive`, `both`, `all` |
+| `--profile` | `laptop`, `desktop` |
+| `--eval-episodes` | число эпизодов оценки |
+| `--top-k` | число кандидатов retriever |
+| `--checkpoint` | путь к checkpoint |
+| `--verbose` | подробный вывод |
 
-```bash
-python main.py --mode benchmark --benchmark-policy adaptive --eval-episodes 100 --network-mode controlled --rerank-weight 0.35 --provider-group-weight 0.0 --log-path runs/selection_benchmark_conservative.jsonl
-```
+## Обучение
 
-Результаты на 100 validation episodes в controlled network:
+LLM/GRPO-обучение запускается так:
 
-| Профиль | Relevance@1 | Relevance@3 | Success | Avg latency | Avg reward |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| adaptive conservative | 56% | 68% | 96% | 0.358s | 2.727 |
-| adaptive aggressive provider | 41% | 68% | 95% | 0.352s | 2.134 |
-
-Для baseline по статье NetMCP/SONAR доступна отдельная политика:
-
-```bash
-python main.py --mode benchmark --benchmark-policy sonar --eval-episodes 100 --network-mode controlled
-```
-
-Для одновременного сравнения `semantic-only`, `sonar` и `adaptive`:
-
-```bash
-python main.py --mode benchmark --benchmark-policy all --eval-episodes 100 --network-mode controlled --log-path runs/final_report/selection_benchmark.jsonl
-```
-
-
-## Метрики после GRPO-обучения
-
-Обучение запускалось командой:
-
-```bash
+```powershell
 python main.py --mode train --epochs 40 --profile laptop
 ```
 
-Лучший checkpoint: `checkpoints/best`, обновлён на 40-й эпохе.
+В ходе обучения:
 
-Training-метрики на 40-й эпохе:
+1. `ToolRegistry` получает top-k кандидатов.
+2. `MCPEnvironment` формирует состояние среды.
+3. LLM выбирает инструмент.
+4. Среда возвращает reward.
+5. GRPO обновляет LoRA-политику.
+6. Метрики сохраняются в `runs/training_metrics.csv`.
+7. График сохраняется в `runs/training_curve.png`.
+8. Лучший checkpoint сохраняется в `checkpoints/best`.
 
-| Metric | Value |
-| --- | ---: |
-| Relevance | 80.56% |
-| Success | 91.28% |
-| Avg reward | 3.698 |
-| Rollouts | 1800 |
-| Updates | 409 |
-| Skipped groups | 191 |
-| Advantage std | 0.892 |
+## Эксперименты
 
-Validation/evaluation на 200 episodes в `controlled` network:
+Экспериментальная часть вынесена в отдельный файл:
 
-```bash
-python main.py --mode evaluate --checkpoint checkpoints/best --eval-episodes 200 --network-mode controlled --profile laptop
-```
+[EXPERIMENTS.md](EXPERIMENTS.md)
 
-| Metric | Value |
-| --- | ---: |
-| Success rate | 94.50% |
-| Relevance@1 | 78.50% |
-| Relevance@3 | 82.50% |
-| Top-3 gap | +4.00% |
-| Avg latency | 0.315s |
-| Fast tool choices | 14.00% |
-| Available choices | 100.00% |
+В нём описаны:
 
-Сравнение с эвристическим adaptive baseline:
+- benchmark-политики;
+- сетевые режимы;
+- метрики;
+- последние результаты;
+- интерпретация ошибок;
+- выводы по сравнению baseline и LLM/GRPO.
 
-| Policy | Relevance@1 | Relevance@3 | Success | Avg latency |
-| --- | ---: | ---: | ---: | ---: |
-| Adaptive baseline | 53-56% | 68-70% | 95-96% | 0.326-0.358s |
-| GRPO-trained LLM | 78.50% | 82.50% | 94.50% | 0.315s |
+## Последние результаты
 
-Вывод: GRPO-политика заметно улучшила функциональную релевантность выбора инструмента и сохранила высокий success rate. Слабое место текущей версии — оптимизация задержки: `Fast tool choices` пока составляет 14%, поэтому latency-компонент reward можно усиливать в дальнейших экспериментах.
+Benchmark, `controlled`, 200 episodes:
 
-Дополнительный deterministic benchmark на 200 episodes:
-
-| Policy | Relevance@1 | Relevance@3 | Success | Avg latency | Avg reward |
+| Policy | Relevance@1 | Relevance@3 | Success rate | Avg latency | Avg reward |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| semantic-only | 77.00% | 84.50% | 89.00% | 0.142s | 3.114 |
-| SONAR-style | 75.50% | 84.00% | 94.50% | 0.148s | 3.328 |
-| adaptive | 67.00% | 83.00% | 93.50% | 0.144s | 3.053 |
+| Semantic | 77.00% | 84.50% | 91.50% | 0.308s | 3.243 |
+| SONAR | 78.00% | 85.00% | 92.50% | 0.297s | 3.337 |
+| Adaptive | 70.50% | 84.50% | 93.50% | 0.294s | 3.120 |
 
-В deterministic-сети semantic-only даёт лучший Relevance@1, а SONAR даёт более высокий success rate и лучший reward за счёт учёта QoS.
-Агрессивный provider-group профиль оставлен только для ablation-экспериментов. По умолчанию он выключен, потому что переобучается на шумные названия провайдеров ToolBench.
+LLM/GRPO evaluation, `controlled`, 200 episodes:
 
-Для воспроизводимого локального прогона:
+| Policy | Relevance@1 | Relevance@3 | Success rate | Avg latency |
+| --- | ---: | ---: | ---: | ---: |
+| LLM/GRPO | 73.00% | 80.00% | 90.50% | 0.393s |
+
+## Визуализации и презентационные материалы
+
+Скрипты генерации находятся в `scripts/`.
+
+| Скрипт | Что создаёт |
+| --- | --- |
+| `build_pipeline_visualization.py` | общую pipeline-схему |
+| `build_state_policy_diagrams.py` | слайды 3-5 pipeline |
+| `build_module_diagrams.py` | схемы основных модулей |
+| `build_data_blocks_diagram.py` | блоки данных проекта |
+| `build_used_data_slide.py` | слайд "Ход решения: данные" |
+| `build_experiments_tests_slide.py` | слайд с экспериментами и тестами |
+| `build_tasks_presentation_google_compatible.py` | Google-compatible PPTX |
+
+Пример:
 
 ```powershell
-.\scripts\run_baselines.ps1
+python scripts/build_used_data_slide.py
+python scripts/build_experiments_tests_slide.py
+```
+
+## Структура проекта
+
+```text
+.
+├── main.py
+├── mcp_config.json
+├── requirements.txt
+├── src/
+│   ├── data/
+│   ├── environment/
+│   ├── selection/
+│   ├── rl/
+│   ├── llm/
+│   └── mcp/
+├── mcp_servers/
+├── models/retriever/
+├── tests/
+├── scripts/
+├── runs/          # локальные логи, игнорируются Git
+└── checkpoints/   # локальные checkpoints, игнорируются Git
 ```
 
 ## Ограничения
 
-- Текущий selector оптимизирует выбор первого инструмента. Multi-tool planning оставлен как будущая работа.
-- В ToolBench есть шумные метки, дублирующиеся провайдеры и alias-инструменты.
-- Если веса retriever отсутствуют, включается lexical fallback. Он устойчивый, но менее точный, чем полноценная embedding-модель.
-- Provider-group reranking является экспериментальным и выключен по умолчанию.
-- Сетевые условия пока эмулируются режимами `deterministic`, `controlled`, `stochastic`.
+- Качество выбора сильно зависит от retriever и качества описаний MCP-инструментов.
+- LLM/GRPO-политика может переобучаться на top-k кандидаты, если retriever отдаёт слабую выдачу.
+- Реальные API-вызовы заменены эмуляцией среды и сетевых условий.
+- Для полноценного обучения нужна локальная или доступная HuggingFace-модель.
 
-## Структура
+## Итог
 
-- `src/selection/` — adaptive selector, intent matcher, reranker features, benchmark runner и log analyzer.
-- `src/environment/` — ToolBench environment и эмуляция сети.
-- `src/rl/` — GRPO training code.
-- `models/retriever/` — retriever-файлы. Веса модели могут отсутствовать в Git; в этом случае используется lexical fallback.
-- `runs/`, checkpoints, виртуальные окружения и большие веса моделей игнорируются Git.
-
-См. также:
-
-- [QUICKSTART.md](QUICKSTART.md) — быстрый запуск;
-- [PIPELINE_STEPS.md](PIPELINE_STEPS.md) — поэтапное описание работы проекта;
-- [ADAPTIVE_SELECTOR.md](ADAPTIVE_SELECTOR.md) — детали selector-а;
-- [CHANGES.md](CHANGES.md) — список изменений.
+Проект показывает, что выбор MCP-инструмента полезно рассматривать как задачу адаптивного ранжирования. Семантическая близость остаётся важной, но в условиях нестабильной сети выбор должен учитывать доступность, задержку, стабильность и вероятность успешного выполнения.

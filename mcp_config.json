@@ -31,11 +31,71 @@
       "enabled": true,
       "requires_api_key": false,
       "description": "Make HTTP POST requests"
+    },
+    "text.count": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Count characters, words and lines in text"
+    },
+    "text.extract_keywords": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Extract frequent keywords from text"
+    },
+    "text.slugify": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Create URL-friendly slug from text"
+    },
+    "regex.search": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Search text with a regular expression"
+    },
+    "datetime.now": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Return current date and time"
+    },
+    "json.validate": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Validate JSON text"
+    },
+    "json.format": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Pretty-print JSON text"
+    },
+    "hash.sha256": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Calculate SHA-256 hash for text"
+    },
+    "random.uuid": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Generate UUID4"
+    },
+    "random.password": {
+      "mcp_server": "python -m mcp_servers.utilities",
+      "enabled": true,
+      "requires_api_key": false,
+      "description": "Generate random password"
     }
   },
   "notes": {
-    "enabled_tools": "5 real MCP tools (no API keys required)",
-    "emulated_tools": "~14,995 emulated tools from ToolBench",
+    "enabled_tools": "15 real MCP tools (no API keys required)",
+    "emulated_tools": "ToolBench tools remain available through emulation",
     "how_to_add_more": "See API_KEYS_GUIDE.md for tools that require API keys"
   }
 }

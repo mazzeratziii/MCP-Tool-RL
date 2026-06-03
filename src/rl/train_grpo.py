@@ -94,7 +94,7 @@ PROFILES: Dict[str, HWProfile] = {
 
 class NetMCPTrainer:
     def __init__(self, config):
-        """?????????????? ?????? ? ????????? ??????????? ???????????."""
+        """Initialize the object."""
         self.config = config
         self.reward_fn = GRPOToolReward(config)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -195,19 +195,19 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def _clear(self):
-        """??????? CUDA-??? ? ????????? ?????? ??????."""
+        """Handle clear."""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
 
     def _current_lr(self) -> float:
-        """?????????? ??????? learning rate ? warmup."""
+        """Handle current lr."""
         return self.config.rl.learning_rate * min(
             1.0, (self._update_step + 1) / self.p.warmup_steps
         )
 
     def _parse_tool_call(self, text: str) -> Optional[str]:
-        """????????? ??? ??????????? ?? ?????? LLM."""
+        """Parse parse tool call."""
         if not text:
             return None
         m = re.search(r"<tool_call>(.*?)</tool_call>", text, re.IGNORECASE | re.DOTALL)
@@ -276,7 +276,7 @@ class NetMCPTrainer:
                 self.model.train()
 
     def _clean_retrieval_rewrite(self, text: str) -> str:
-        """??????? ????????? LLM rewrite ?? ??????."""
+        """Clean clean retrieval rewrite."""
         text = (text or "").strip()
         text = text.splitlines()[0] if text else ""
         text = re.sub(r"^(keywords?|answer|query)\s*:\s*", "", text, flags=re.IGNORECASE).strip()
@@ -369,7 +369,7 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def _encode_context(self, state: Dict) -> torch.Tensor:
-        """???????? prompt-???????? ? token ids."""
+        """Encode encode context."""
         ctx = get_dynamic_prompt(state["query"], state["tools"])
         ids = self.tokenizer(
             ctx, return_tensors="pt",
@@ -403,7 +403,7 @@ class NetMCPTrainer:
                            tool_embs: torch.Tensor,
                            semantic_scores: Optional[List[float]] = None
                            ) -> torch.Tensor:
-        """??????? logits ?????? ?? ????????? ? ????????????."""
+        """Handle forward with embs."""
         out = self.model(input_ids, output_hidden_states=True)
         hidden = out.hidden_states[-1][:, -1, :]          # (1, d)
         logits = torch.matmul(hidden, tool_embs.T).squeeze(0)
@@ -420,7 +420,7 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def _make_group(self, prompt: Dict) -> Dict:
-        """???????? ?????? rollout-?? ??? GRPO."""
+        """Handle make group."""
         state, tools, scores = self._get_tools_state(prompt)
         if not tools:
             return {
@@ -501,7 +501,7 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def _train_group(self, group: Dict) -> Optional[float]:
-        """?????? ???? gradient update ?? ?????? rollout-??."""
+        """Train train group."""
         if group.get("empty"):
             return None
 
@@ -554,7 +554,7 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def train(self):
-        """????????? ?????? ???? GRPO-????????."""
+        """Train train."""
         print(f"\n{'=' * 60}")
         print(f"GRPO TRAINING [{self.p.name}] — {self.config.rl.num_epochs} epochs")
         print(f"{'=' * 60}")
@@ -657,7 +657,7 @@ class NetMCPTrainer:
 
     def evaluate(self, num_episodes: int = 200,
                  network_mode: NetworkMode = NetworkMode.CONTROLLED):
-        """????????? ????????? LLM-???????? ?? validation prompts."""
+        """Evaluate evaluate."""
         print(f"\n{'=' * 60}")
         print(f"EVALUATION [{self.p.name}] — {num_episodes} ep, mode={network_mode.value}")
         print(f"{'=' * 60}")
@@ -729,7 +729,7 @@ class NetMCPTrainer:
     # ------------------------------------------------------------------
 
     def _save_checkpoint(self, label):
-        """????????? LoRA checkpoint ? ?????????? ????????."""
+        """Save save checkpoint."""
         d = f"checkpoints/{label}"
         os.makedirs(d, exist_ok=True)
         self.model.save_pretrained(d)
@@ -787,7 +787,7 @@ class NetMCPTrainer:
 
     # Совместимость для интерактивного режима
     def _forward(self, context: str, tools: List[str], **kwargs) -> torch.Tensor:
-        """??????????? wrapper ??? ??????? interactive-??????????."""
+        """Handle forward."""
         ids  = self.tokenizer(
             context, return_tensors="pt",
             truncation=True, max_length=self.p.max_ctx_len, padding=False,
