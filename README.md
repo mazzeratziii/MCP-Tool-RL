@@ -273,7 +273,6 @@ python scripts/build_experiments_tests_slide.py
 ├── mcp_servers/
 ├── models/retriever/
 ├── tests/
-├── scripts/
 ├── runs/          # локальные логи, игнорируются Git
 └── checkpoints/   # локальные checkpoints, игнорируются Git
 ```
