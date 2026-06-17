@@ -235,26 +235,7 @@ LLM/GRPO evaluation, `controlled`, 200 episodes:
 | --- | ---: | ---: | ---: | ---: |
 | LLM/GRPO | 73.00% | 80.00% | 90.50% | 0.393s |
 
-## Визуализации и презентационные материалы
 
-Скрипты генерации находятся в `scripts/`.
-
-| Скрипт | Что создаёт |
-| --- | --- |
-| `build_pipeline_visualization.py` | общую pipeline-схему |
-| `build_state_policy_diagrams.py` | слайды 3-5 pipeline |
-| `build_module_diagrams.py` | схемы основных модулей |
-| `build_data_blocks_diagram.py` | блоки данных проекта |
-| `build_used_data_slide.py` | слайд "Ход решения: данные" |
-| `build_experiments_tests_slide.py` | слайд с экспериментами и тестами |
-| `build_tasks_presentation_google_compatible.py` | Google-compatible PPTX |
-
-Пример:
-
-```powershell
-python scripts/build_used_data_slide.py
-python scripts/build_experiments_tests_slide.py
-```
 
 ## Структура проекта
 
