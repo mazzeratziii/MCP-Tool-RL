@@ -49,18 +49,6 @@ MCP-агент получает текстовый запрос и выбира�
 | `runs/*.jsonl` | логи выбора инструментов | анализ ошибок и сравнение политик |
 | `checkpoints/*` | LoRA-checkpoints обученной политики | evaluate и interactive |
 
-Схема данных генерируется командой:
-
-```powershell
-python scripts/build_used_data_slide.py
-```
-
-Результат появится в:
-
-```text
-outputs/data_blocks/used_data_slide.png
-```
-
 ## Архитектура
 
 Основные модули проекта:
